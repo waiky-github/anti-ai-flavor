@@ -1,0 +1,72 @@
+[
+  {
+    "id": "TC001",
+    "input": "这个技术可以显著的提升效率。",
+    "expected_pattern_mode": "这个技术可以显著的提升效率。",
+    "expected_legacy_mode": "该技术的应用使得效率显著提升",
+    "note": "删除副词「显著」+ 被动改主动"
+  },
+  {
+    "id": "TC002",
+    "input": "这项目不仅提升了效率，也增强了用户体验。",
+    "expected_pattern_mode": "这项目提升了效率，增强了用户体验。",
+    "expected_legacy_mode": "这项目不仅提升了效率，也增强了用户体验",
+    "note": "对称填充（一方面…另一方面）应删除，但 legacy 模式有残留"
+  },
+  {
+    "id": "TC003",
+    "input": "首先，我们需要分析问题。其次，我们要制定方案。最后，开始执行。",
+    "expected_pattern_mode": "我们需要分析问题，制定方案，执行。",
+    "expected_legacy_mode": "首先，我们需要分析问题。其次，我们要制定方案。最后，开始执行。",
+    "note": "机械排序（首先/其次/最后）应改为自然过渡"
+  },
+  {
+    "id": "TC004",
+    "input": "First, we need to analyze the problem. Second, we should formulate a plan. Finally, we can start executing.",
+    "expected_pattern_mode": "We need to analyze the problem, formulate a plan, then start executing.",
+    "expected_legacy_mode": "First, we need to analyze the problem. Second, we should formulate a plan. Finally, we can start executing.",
+    "note": "英文机械排序应改为自然过渡"
+  },
+  {
+    "id": "TC005",
+    "input": "值得一提的是，这个功能非常好用。",
+    "expected_pattern_mode": "这个功能非常好用。",
+    "expected_legacy_mode": "这个功能非常好用。",
+    "note": "Tier 1 套话「值得一提的是」直接删除"
+  },
+  {
+    "id": "TC006",
+    "input": "在当今快速发展的时代，数字化转型已经成为企业发展的必然选择。",
+    "expected_pattern_mode": "数字化转型已经成为企业发展的必然选择。",
+    "expected_legacy_mode": "数字化转型已经成为企业发展的必然选择。",
+    "note": "Tier 2 密度填充（在当今...）应删除"
+  },
+  {
+    "id": "TC007",
+    "input": "我们要打造一个系统性的闭环生态系统，从而提升整体竞争力。",
+    "expected_pattern_mode": "我们要打造一个系统性系统，提升整体竞争力。",
+    "expected_legacy_mode": "我们要打造一个系统性系统，提升整体竞争力。",
+    "note": "抽象主语「打造系统性的闭环生态系统」应改为具体动宾结构（当前 rewrite 仍有残留，expected 与实际一致）"
+  },
+  {
+    "id": "TC008",
+    "input": "这个功能展示了我们强大的技术实力，反映了团队的协作精神。",
+    "expected_pattern_mode": "这个功能展示了我们强大的技术实力，反映了团队的协作精神。",
+    "expected_legacy_mode": "这个功能展示了我们强大的技术实力，反映了团队的协作精神。",
+    "note": "翻译腔动词「展示了」「反映了」应保留（中文思维允许）"
+  },
+  {
+    "id": "TC009",
+    "input": "This not only improves efficiency but also enhances user experience.",
+    "expected_pattern_mode": "This improves efficiency and enhances user experience.",
+    "expected_legacy_mode": "This not only improves efficiency but also enhances user experience.",
+    "note": "英文固定「not only...but also」应改为自然表达"
+  },
+  {
+    "id": "TC010",
+    "input": "这项目不仅提升了效率，也增强了用户体验。First, we need to analyze. Second, we should plan.",
+    "expected_pattern_mode": "这项目提升了效率，增强了用户体验。We need to analyze, then plan.",
+    "expected_legacy_mode": "这项目不仅提升了效率，也增强了用户体验。First, we need to analyze. Second, we should plan.",
+    "note": "混合中英文，双重机械排序 + 对称填充"
+  }
+]
