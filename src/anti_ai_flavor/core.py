@@ -37,6 +37,7 @@ try:
     from .patterns.p23_false_precision import match as p23_match, fix as p23_fix
     from .patterns.p24_moralizing import match as p24_match, fix as p24_fix
     from .patterns.p25_vagueness_by_design import match as p25_match, fix as p25_fix
+    from .patterns.p26_mixed_code_switching import match as p26_match, fix as p26_fix
     PATTERNS_AVAILABLE = True
 except ImportError:
     PATTERNS_AVAILABLE = False
@@ -220,6 +221,7 @@ def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
         (p23_match, p23_fix),   # False precision
         (p24_match, p24_fix),   # Moralizing
         (p25_match, p25_fix),   # Vagueness by design
+        (p26_match, p26_fix),   # Mixed code-switching
     ]
     
     for match_fn, fix_fn in pattern_fixes_p17_25:

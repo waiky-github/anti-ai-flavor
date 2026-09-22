@@ -139,3 +139,43 @@ class TestCheckDocsNoDuplicateIO:
         assert read_count.get("n", 0) <= 2, (
             f"check-docs 对文件 read_text 了 {read_count['n']} 次，预期最多 2 次"
         )
+
+
+class TestP26MixedCodeSwitching:
+    """P3-03: 中英混合 pattern 规则 + golden 用例"""
+
+    def test_p26_match_the_system(self):
+        """The system 能够... 应命中 p26"""
+        from anti_ai_flavor.patterns.p26_mixed_code_switching import match as p26_match
+        text = "The system 能够显著提升效率。"
+        results = p26_match(text)
+        assert len(results) == 1
+        assert results[0].matched_text == "The system 能够显著提升效率。"
+        assert results[0].suggested_fix == "系统能够显著提升效率。"
+
+    def test_p26_match_this(self):
+        """This 不仅... 应命中 p26"""
+        from anti_ai_flavor.patterns.p26_mixed_code_switching import match as p26_match
+        text = "This 不仅提升了效率，也增强了体验。"
+        results = p26_match(text)
+        assert len(results) == 1
+        assert results[0].suggested_fix == "系统不仅提升了效率，也增强了体验。"
+
+    def test_p26_no_false_positive(self):
+        """纯中文不应命中 p26"""
+        from anti_ai_flavor.patterns.p26_mixed_code_switching import match as p26_match
+        assert p26_match("这个系统能够显著提升效率。") == []
+        assert p26_match("首先，我们需要分析问题。") == []
+
+    def test_p26_rewrite_text_golden(self):
+        """TC011 golden 用例：rewrite_text 应按 p26 改写"""
+        from anti_ai_flavor.core import rewrite_text
+        result = rewrite_text("The system 能够显著提升效率。")
+        assert result == "系统能够显著提升效率。"
+
+    def test_p26_in_scoring(self):
+        """p26 应在 scoring.py pattern_groups 中注册"""
+        from anti_ai_flavor.scoring import _count_pattern_hits
+        hits = _count_pattern_hits("The system 能够显著提升效率。")
+        ids = [h.pattern_id for h in hits]
+        assert "p26_mixed_code_switching" in ids

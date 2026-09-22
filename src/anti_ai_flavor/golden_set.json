@@ -68,5 +68,12 @@
     "expected_pattern_mode": "这项目提升了效率，增强了用户体验。We need to analyze, then plan.",
     "expected_legacy_mode": "这项目不仅提升了效率，也增强了用户体验。First, we need to analyze. Second, we should plan.",
     "note": "混合中英文，双重机械排序 + 对称填充"
+  },
+  {
+    "id": "TC011",
+    "input": "The system 能够显著提升效率。",
+    "expected_pattern_mode": "系统能够显著提升效率。",
+    "expected_legacy_mode": "The system 能够显著提升效率。",
+    "note": "中英混杂句式：英文主语 + 中文谓语应删除英文前缀"
   }
 ]
