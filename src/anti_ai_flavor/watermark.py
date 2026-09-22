@@ -50,8 +50,9 @@ def _remove_zero_width(text: str) -> tuple[str, int, bool]:
 
 
 # === 同形字检测 ===
-# 全角 ASCII（U+FF01–FF5E）→ 半角
-_FULLWIDTH_ASCII_RE = re.compile(r"[\uff01-\uff5e]")
+# 全角字母数字（U+FF01–FF5E 中的字母数字子集）→ 半角
+# 不动全角标点（，。！？等），避免破坏 golden_set 白名单
+_FULLWIDTH_ALNUM_RE = re.compile(r"[\uff21-\uff3a\uff41-\uff5a\uff10-\uff19]")
 
 # CJK 兼容字符（U+F900–FAFF）通常不是正常输入
 _CJK_COMPAT_RE = re.compile(r"[\uf900-\ufaff]")
@@ -77,9 +78,9 @@ _HOMOGLYPH_MAP = {
 
 
 def _replace_homoglyphs(text: str) -> tuple[str, int]:
-    # 全角 ASCII → 半角
-    fullwidth_matches = _FULLWIDTH_ASCII_RE.findall(text)
-    text = _FULLWIDTH_ASCII_RE.sub(
+    # 全角字母数字 → 半角
+    fullwidth_matches = _FULLWIDTH_ALNUM_RE.findall(text)
+    text = _FULLWIDTH_ALNUM_RE.sub(
         lambda m: chr(ord(m.group(0)) - 0xFEE0), text
     )
     count = len(fullwidth_matches)
@@ -157,7 +158,7 @@ def detect_watermark(text: str, *, clean: bool = False) -> WatermarkResult:
             bom_detected = True
             warnings.append("检测到 BOM (U+FEFF)")
 
-        fullwidth_count = len(_FULLWIDTH_ASCII_RE.findall(text))
+        fullwidth_count = len(_FULLWIDTH_ALNUM_RE.findall(text))
         compat_count = len(_CJK_COMPAT_RE.findall(text))
         if fullwidth_count:
             warnings.append(f"检测到 {fullwidth_count} 个全角 ASCII 字符")
