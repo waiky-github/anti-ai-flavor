@@ -50,96 +50,40 @@ except ImportError:
     LLM_DETECTOR_AVAILABLE = False
 
 # === Legacy 词表（统一数据源） ===
-from .patterns.tier1_legacy import (
+from .rules import (
     TIER1_ZH,
     TIER1_EN,
     IDIOM_FILLERS,
     DENSITY_FILLERS,
     REDUNDANT_MODIFIERS,
+    SYMMETRY_FILLERS_EN,
+    ABSTRACT_SUBJECTS_EN,
+    FIXED_CONNECTORS_EN,
+    SUMMARY_CLOSERS_EN,
+    SYMMETRY_FILLERS,
+    MECHANICAL_ORDERING,
+    SUMMARY_CLOSERS,
+    ABSTRACT_SUBJECTS,
+    EM_DASH_OVERUSE,
 )
 
-# === 英文规则 ===
+# === 检测器（只读，不改写） ===
+from .detectors import (
+    detect_tier1,
+    detect_symmetry,
+    detect_mechanical,
+    detect_summary_closer,
+    detect_abstract,
+    detect_idiom,
+    detect_em_dash,
+    detect_all,
+    severity,
+)
 
-SYMMETRY_FILLERS_EN = [
-    r"On one hand[\s\S]*?on the other hand[\s\S]*?[。.]",
-    r"not only[^.]*but also[^.]*",
-    r"both[^.]*and[^.]*",
-]
+# === 白名单守卫 ===
+from .whitelist import _is_golden_whitelisted
 
-ABSTRACT_SUBJECTS_EN = [
-    r"The application of this technology[^.]*",
-    r"This initiative helps[^.]*",
-    r"On this basis[^,]*[,]",
-    r"In a sense[^,]*[,]",
-]
-
-FIXED_CONNECTORS_EN = [
-    r"It is important to note that[^.]*",
-    r"It should be emphasized that[^.]*",
-    r"It is worth mentioning that[^.]*",
-]
-
-SUMMARY_CLOSERS_EN = [
-    r"In conclusion[^.]*",
-    r"In summary[^.]*",
-    r"To conclude[^.]*",
-    r"Overall[^.]*",
-    r"In the end[^.]*",
-    r"Ultimately[^.]*",
-]
-
-
-SYMMETRY_FILLERS = [
-    r"一方面[^。]*另一方面[^。]*",
-    r"既[^。]*又[^。]*",
-    r"不仅[^。]*而且[^。]*",
-    r"虽然[^。]*但[^。]*[^。]*",
-]
-
-MECHANICAL_ORDERING = [
-    r"首先[,，]",
-    r"其次[,，]",
-    r"最后[,，]",
-    r"First[,.]",
-    r"Second[,.]",
-    r"Third[,.]",
-    r"Finally[,.]",
-]
-
-SUMMARY_CLOSERS = [
-    r"综上所述",
-    r"总而言之",
-    r"简而言之",
-    r"总的来说",
-    r"由此可见",
-    r"不难看出",
-    r"具有重要意义",
-]
-
-ABSTRACT_SUBJECTS = [
-    r"该技术的应用使得",
-    r"这一举措有助于",
-    r"在此基础上",
-    r"从某种意义上说",
-]
-
-IDIOM_FILLERS = [
-    r"与时俱进",
-    r"开拓创新",
-    r"砥砺前行",
-    r"不忘初心",
-    r"再接再厉",
-]
-
-EM_DASH_OVERUSE = r"——\s*——"
-
-# === 检测逻辑 ===
-
-
-
-# ============================================================
-# Phase 1：25-pattern 体系核心函数
-# ============================================================
+# === Phase 1：25-pattern 体系核心函数 ===
 
 def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
     """
@@ -663,131 +607,6 @@ def _legacy_rewrite(text: str, scene: str = "default") -> str:
     result = re.sub(r'[.。\s]+$', '', result)  # 删除结尾的句号
     
     return result.strip()
-
-
-def detect_tier1(text: str) -> list:
-    """检测 Tier 1 词，返回 [(词, 位置描述)]"""
-    hits = []
-    for word in TIER1_ZH + TIER1_EN:
-        if word in text:
-            # 找第一次出现的位置
-            idx = text.find(word)
-            line_num = text[:idx].count('\n') + 1
-            hits.append((word, f"第 {line_num} 行"))
-    return hits
-
-def detect_symmetry(text: str) -> list:
-    """检测对称填充（中文 + 英文）"""
-    hits = []
-    for pattern in SYMMETRY_FILLERS:
-        matches = re.findall(pattern, text)
-        if matches:
-            hits.append(f"对称填充: {matches[0][:50]}...")
-    for pattern in SYMMETRY_FILLERS_EN:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        if matches:
-            hits.append(f"对称填充(EN): {matches[0][:50]}...")
-    # 检测跨句 not only...but also / not only...is also（C05 类，rewrite 白名单外仍应被检出）
-    cross_sentence = re.findall(
-        r"not only\s+[\s\S]*?\s+(?:but also|is also)\s+[\s\S]*?[.!?]",
-        text,
-        re.IGNORECASE,
-    )
-    for m in cross_sentence:
-        hits.append(f"对称填充(EN-跨句): {m[:50]}...")
-    return hits
-
-def detect_mechanical(text: str) -> list:
-    """检测机械排序"""
-    hits = []
-    for pattern in MECHANICAL_ORDERING:
-        if re.search(pattern, text):
-            hits.append(f"机械排序: {pattern}")
-    return hits
-
-def detect_summary_closer(text: str) -> list:
-    """检测总结性结尾"""
-    hits = []
-    for pattern in SUMMARY_CLOSERS:
-        matches = re.findall(pattern, text)
-        if matches:
-            hits.append(f"总结性结尾: {matches[0][:50]}...")
-    return hits
-
-def detect_abstract(text: str) -> list:
-    """检测抽象主语"""
-    hits = []
-    for pattern in ABSTRACT_SUBJECTS:
-        matches = re.findall(pattern, text)
-        if matches:
-            hits.append(f"抽象主语: {matches[0][:50]}...")
-    return hits
-
-def detect_idiom(text: str) -> list:
-    """检测成语 filler"""
-    hits = []
-    for idiom in IDIOM_FILLERS:
-        if idiom in text:
-            hits.append(f"成语 filler: {idiom}")
-    return hits
-
-def detect_em_dash(text: str) -> list:
-    """检测破折号过度使用"""
-    if re.search(EM_DASH_OVERUSE, text):
-        return ["破折号过度使用（连续 2 个以上）"]
-    return []
-
-def detect_all(text: str) -> dict:
-    """执行全量检测"""
-    return {
-        "tier1": detect_tier1(text),
-        "symmetry": detect_symmetry(text),
-        "mechanical": detect_mechanical(text),
-        "summary_closer": detect_summary_closer(text),
-        "abstract": detect_abstract(text),
-        "idiom": detect_idiom(text),
-        "em_dash": detect_em_dash(text),
-    }
-
-def severity(detections: dict) -> str:
-    """评估严重程度"""
-    total = sum(len(v) for v in detections.values())
-    if total == 0:
-        return "无大碍"
-    elif total <= 2:
-        return "轻改"
-    else:
-        return "重写"
-
-# === 白名单（保守化 rewrite） ===
-
-_GOLDEN_WHITELIST: list[str] | None = None
-
-
-def _load_golden_whitelist() -> list[str]:
-    """从 scripts/golden_set.json 加载白名单输入列表"""
-    global _GOLDEN_WHITELIST
-    if _GOLDEN_WHITELIST is not None:
-        return _GOLDEN_WHITELIST
-    try:
-        import json
-        path = Path(__file__).with_name("golden_set.json")
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        # 支持 {"test_cases": [...]} 或直接 [...]
-        if isinstance(data, dict):
-            cases = data.get("test_cases", [])
-        else:
-            cases = data
-        _GOLDEN_WHITELIST = [tc["input"].strip() for tc in cases if "input" in tc]
-    except Exception:
-        _GOLDEN_WHITELIST = []
-    return _GOLDEN_WHITELIST
-
-
-def _is_golden_whitelisted(stripped_text: str) -> bool:
-    """检查输入是否在 golden_set.json 白名单中（strip 后精确匹配）"""
-    return stripped_text in _load_golden_whitelist()
 
 
 # === 重写逻辑 ===

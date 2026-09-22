@@ -179,3 +179,37 @@ class TestP26MixedCodeSwitching:
         hits = _count_pattern_hits("The system 能够显著提升效率。")
         ids = [h.pattern_id for h in hits]
         assert "p26_mixed_code_switching" in ids
+
+
+class TestP26MixedCodeSwitchingExtended:
+    """P3-03 扩展：更多英文主语模式"""
+
+    def test_p26_match_the_platform(self):
+        """The platform 能够... 应命中 p26"""
+        from anti_ai_flavor.patterns.p26_mixed_code_switching import match as p26_match
+        text = "The platform 能够显著提升效率。"
+        results = p26_match(text)
+        assert len(results) == 1
+        assert results[0].suggested_fix == "系统能够显著提升效率。"
+
+    def test_p26_match_our_team(self):
+        """Our team 不仅... 应命中 p26"""
+        from anti_ai_flavor.patterns.p26_mixed_code_switching import match as p26_match
+        text = "Our team 不仅提升了效率，也增强了体验。"
+        results = p26_match(text)
+        assert len(results) == 1
+        assert results[0].suggested_fix == "系统不仅提升了效率，也增强了体验。"
+
+    def test_p26_match_this_solution(self):
+        """This solution 需要... 应命中 p26"""
+        from anti_ai_flavor.patterns.p26_mixed_code_switching import match as p26_match
+        text = "This solution 需要进一步优化。"
+        results = p26_match(text)
+        assert len(results) == 1
+        assert results[0].suggested_fix == "系统需要进一步优化。"
+
+    def test_p26_no_false_positive_pure_chinese(self):
+        """纯中文不应命中 p26"""
+        from anti_ai_flavor.patterns.p26_mixed_code_switching import match as p26_match
+        assert p26_match("这个系统能够显著提升效率。") == []
+        assert p26_match("首先，我们需要分析问题。") == []

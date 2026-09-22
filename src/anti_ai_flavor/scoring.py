@@ -202,7 +202,7 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
         ("p23_false_precision", r"\d+\.\d+%|数百万|数十亿|billions?\s+(?:of\s+)?(?:dollars|users|people)"),
         ("p24_moralizing", r"(?:我们必须|我们应该|大家应该|we\s+must|we\s+should)[^。]*?[。！]"),
         ("p25_vagueness_by_design", r"(?:各种|诸多|若干|numerous|several|various)[^。]*?[。！]"),
-        ("p26_mixed_code_switching", r"(?:The system|This|That)\s+[^。]*?[。！]"),
+        ("p26_mixed_code_switching", r"(?:The system|The platform|Our team|This solution|This approach|This|That)\s+[^。]*?[。！]"),
     ]
 
     for pattern_id, pattern in pattern_groups:
