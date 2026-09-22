@@ -6,17 +6,9 @@ patterns/p23_false_precision.py — Pattern 23: False precision
 修复：标记为需要验证（纯规则无法验证，只标记）
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str  # "" 表示标记但不修改
 
 
 ZH_PATTERNS = [
@@ -36,7 +28,6 @@ EN_PATTERNS = [
     r" billions?",
     r"thousands? of",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -58,7 +49,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, ""))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text

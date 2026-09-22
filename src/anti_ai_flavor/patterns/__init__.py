@@ -7,7 +7,19 @@ patterns/__init__.py — 25-pattern 体系入口
   - fix(match, text) -> str      # 返回修复后的文本
 """
 
+from dataclasses import dataclass
+from typing import List
+
 from .tier1_legacy import TIER1_ZH, TIER1_EN
+
+
+@dataclass
+class Match:
+    start: int
+    end: int
+    matched_text: str
+    suggested_fix: str
+
 
 # Pattern registry
 from .p01_not_x_but_y import match as p01_match, fix as p01_fix

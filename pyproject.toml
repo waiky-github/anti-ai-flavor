@@ -46,6 +46,7 @@ anti_ai_flavor = ["golden_set.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

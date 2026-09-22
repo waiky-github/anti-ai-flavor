@@ -6,9 +6,6 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 from anti_ai_flavor.cli import main as cli_main
 from anti_ai_flavor.scoring import score_text, _count_pattern_hits
 

@@ -7,18 +7,9 @@ patterns/p07_artificial_imbalance.py — Pattern 7: Artificial imbalance
 修复：统一保留后半句（更重要/主要的那部分）
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 ZH_PATTERNS = [
     r"一方面[^，,。]*?[，,][\s]*更重要的是",
@@ -29,7 +20,6 @@ EN_PATTERNS = [
     r"not only[^,]*?,\s*but more importantly",
     r"not just[^,]*?,\s*but more importantly",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -73,7 +63,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, suggested))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

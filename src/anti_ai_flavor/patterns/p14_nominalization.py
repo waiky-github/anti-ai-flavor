@@ -6,18 +6,9 @@ patterns/p14_nominalization.py — Pattern 14: Nominalization
 修复：改为动词（优化 / 决定 / 改革）
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 ZH_PATTERNS = [
     (r"进行(?:优化|改进|调整|改革|升级|部署|实施|检查)", lambda m: re.search(r"进行(.+)", m.group()).group(1)),
@@ -33,7 +24,6 @@ EN_PATTERNS = [
     r"implement (?:a |the )?(?:solution|strategy|plan|system)",
     r"provide (?:a |the )?(?:solution|solution|response|answer)",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -61,7 +51,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, suggested))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

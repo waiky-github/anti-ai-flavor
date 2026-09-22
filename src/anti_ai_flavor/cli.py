@@ -28,9 +28,9 @@ def main():
 
     # rewrite 子命令
     rewrite_parser = subparsers.add_parser("rewrite", help="重写文本")
-    rewrite_parser.add_argument("file", nargs="?", help="输入文件路径（默认 stdin）")
+    rewrite_parser.add_argument("file", nargs="*", help="输入文件路径（默认 stdin，支持多文件/glob）")
     rewrite_parser.add_argument("--scene", default="default", help="场景 pack")
-    rewrite_parser.add_argument("--output", "-o", help="输出文件（默认 stdout）")
+    rewrite_parser.add_argument("--output", "-o", help="输出文件（默认 stdout，多文件时忽略）")
     rewrite_parser.add_argument("--diff", action="store_true", help="显示 diff")
     rewrite_parser.add_argument("--strict", action="store_true", help="严格模式：漏掉 Tier 1 词时报错")
     rewrite_parser.add_argument("--report", action="store_true", help="输出改写评分报告（JSON）")
@@ -47,6 +47,7 @@ def main():
     # check-docs 子命令
     check_parser = subparsers.add_parser("check-docs", help="检查目录下所有 markdown 文件的密度")
     check_parser.add_argument("docs_dir", help="文档目录路径")
+    check_parser.add_argument("--fix", action="store_true", help="自动 rewrite 需要重写的文件")
 
     # detect 子命令（Phase 2: LLM 检测）
     detect_parser = subparsers.add_parser("detect", help="LLM 检测 AI 味特征（只读，不改写）")
@@ -62,63 +63,89 @@ def main():
 
     # rewrite 子命令
     if args.command == "rewrite":
-        if args.file:
-            raw = Path(args.file).read_text(encoding="utf-8")
+        files = args.file or []
+
+        def _process_raw(raw: str):
+            # 水印预处理
+            if args.watermark:
+                wm_result = detect_watermark(raw, clean=True)
+                if wm_result.warnings:
+                    for w in wm_result.warnings:
+                        print(f"ℹ️ 水印清理: {w}", file=sys.stderr)
+                raw = wm_result.cleaned_text
+
+            # 评分报告
+            if args.report:
+                rewritten, report = rewrite_with_report(raw, scene=args.scene)
+            else:
+                rewritten = rewrite_text(raw, scene=args.scene)
+                report = None
+
+            # LLM 后处理（默认关闭，显式传入 --llm 才启用）
+            use_llm = args.llm and not args.no_llm
+            if use_llm:
+                try:
+                    rewritten = llm_rewrite(
+                        rewritten,
+                        base_url=args.llm_base_url,
+                        model=args.llm_model,
+                        scene=args.scene,
+                    )
+                    if report is not None:
+                        # LLM 成功后同步更新报告，避免 rewritten / score_after 与真实输出不一致
+                        report["rewritten"] = rewritten
+                        report["changed"] = True
+                        score_after = score_text(rewritten)
+                        report["score_after"] = {
+                            "score": score_after.score,
+                            "raw": score_after.raw,
+                            "summary": score_after.summary,
+                            "hits": [
+                                {
+                                    "category": h.category,
+                                    "pattern_id": h.pattern_id,
+                                    "matched_text": h.matched_text,
+                                    "penalty": h.penalty,
+                                    "note": h.note,
+                                }
+                                for h in score_after.hits
+                            ],
+                        }
+                        report["llm_applied"] = True
+                        report["llm_model"] = args.llm_model
+                except (ValueError, ImportError, RuntimeError) as e:
+                    print(f"⚠️ LLM rewrite 降级: {e}", file=sys.stderr)
+                    # 不退出，继续用纯规则结果
+
+            return rewritten, report
+
+        if len(files) > 1:
+            # 多文件模式：不支持 --diff/--report/--output/--strict
+            for f in files:
+                raw = Path(f).read_text(encoding="utf-8")
+                rewritten, _ = _process_raw(raw)
+                print(f"=== {f} ===")
+                print(rewritten)
+            sys.exit(0)
+
+        if len(files) == 1:
+            raw = Path(files[0]).read_text(encoding="utf-8")
         else:
             raw = sys.stdin.read()
 
-        # 水印预处理
-        if args.watermark:
-            wm_result = detect_watermark(raw, clean=True)
-            if wm_result.warnings:
-                for w in wm_result.warnings:
-                    print(f"ℹ️ 水印清理: {w}", file=sys.stderr)
-            raw = wm_result.cleaned_text
-
-        # 评分报告
-        if args.report:
-            rewritten, report = rewrite_with_report(raw, scene=args.scene)
-        else:
-            rewritten = rewrite_text(raw, scene=args.scene)
-            report = None
-
-        # LLM 后处理（默认关闭，显式传入 --llm 才启用）
-        use_llm = args.llm and not args.no_llm
-        if use_llm:
-            try:
-                rewritten = llm_rewrite(
-                    rewritten,
-                    base_url=args.llm_base_url,
-                    model=args.llm_model,
-                    scene=args.scene,
-                )
-                if report is not None:
-                    # LLM 成功后同步更新报告，避免 rewritten / score_after 与真实输出不一致
-                    report["rewritten"] = rewritten
-                    report["changed"] = True
-                    report["score_after"] = {
-                        "score": score_text(rewritten).score,
-                        "raw": score_text(rewritten).raw,
-                        "summary": score_text(rewritten).summary,
-                        "hits": [
-                            {
-                                "category": h.category,
-                                "pattern_id": h.pattern_id,
-                                "matched_text": h.matched_text,
-                                "penalty": h.penalty,
-                                "note": h.note,
-                            }
-                            for h in score_text(rewritten).hits
-                        ],
-                    }
-                    report["llm_applied"] = True
-                    report["llm_model"] = args.llm_model
-            except (ValueError, ImportError, RuntimeError) as e:
-                print(f"⚠️ LLM rewrite 降级: {e}", file=sys.stderr)
-                # 不退出，继续用纯规则结果
+        rewritten, report = _process_raw(raw)
 
         # 输出
-        if args.output:
+        if args.diff:
+            import difflib
+            diff_lines = difflib.unified_diff(
+                raw.splitlines(keepends=True),
+                rewritten.splitlines(keepends=True),
+                fromfile=files[0] if files else "stdin",
+                tofile=args.output or "stdout",
+            )
+            sys.stdout.writelines(diff_lines)
+        elif args.output:
             Path(args.output).write_text(rewritten, encoding="utf-8")
             print(f"已写入: {args.output}", file=sys.stderr)
         else:
@@ -136,6 +163,15 @@ def main():
                 print(json.dumps(output, ensure_ascii=False, indent=2))
             else:
                 print(rewritten)
+
+        # 严格模式：检查 Tier 1 残留
+        if args.strict:
+            from .core import detect_tier1
+            remaining = detect_tier1(rewritten)
+            if remaining:
+                for word, loc in remaining:
+                    print(f"STRICT: 残留 Tier1「{word}」at {loc}", file=sys.stderr)
+                sys.exit(3)
 
         if args.report and report is not None:
             score_before = report["score_before"]["score"]
@@ -168,6 +204,7 @@ def main():
         print(f"检查 {len(md_files)} 个文档...", file=sys.stderr)
         issues_found = False
         issue_files = []
+        fixed_files = []
         for f in md_files:
             text = f.read_text(encoding="utf-8")
             result = detect_density(text)
@@ -182,7 +219,17 @@ def main():
                 if result["tier3_words"]:
                     print(f"  Tier 3 词: {', '.join(result['tier3_words'])}", file=sys.stderr)
 
+                if args.fix:
+                    from .core import rewrite_text
+                    rewritten = rewrite_text(text)
+                    if rewritten != text:
+                        f.write_text(rewritten, encoding="utf-8")
+                        fixed_files.append(f)
+                        print(f"  ✅ 已自动 rewrite", file=sys.stderr)
+
         if issues_found:
+            if args.fix and fixed_files:
+                print(f"\n🔧 已修复 {len(fixed_files)} 个文档", file=sys.stderr)
             print(f"\n❌ {len(issue_files)} 个文档需要重写", file=sys.stderr)
             sys.exit(1)
         else:

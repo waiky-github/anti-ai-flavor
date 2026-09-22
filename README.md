@@ -13,7 +13,7 @@ pip install anti-ai-flavor
 ```python
 from anti_ai_flavor import rewrite_text, detect_all
 
-text = "这个方案提升了效率，也增强了稳定性。"
+text = "这项目不仅提升了效率，也增强了用户体验。"
 clean = rewrite_text(text)
 print(clean)
 

@@ -22,7 +22,12 @@ from .scoring import score_text, rewrite_with_report, ScoreResult
 from .watermark import detect_watermark
 from .llm_rewrite import llm_rewrite
 
-__version__ = "0.1.0"
+try:
+    from importlib.metadata import version as _version
+    __version__ = _version("anti-ai-flavor")
+except Exception:
+    __version__ = "0.1.0"
+
 __all__ = [
     "rewrite_text",
     "detect_all",

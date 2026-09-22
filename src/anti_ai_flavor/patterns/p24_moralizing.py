@@ -6,18 +6,9 @@ patterns/p24_moralizing.py — Pattern 24: Moralizing
 修复：改为客观陈述
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 ZH_PATTERNS = [
     r"我们必须",
@@ -36,7 +27,6 @@ EN_PATTERNS = [
     r"it is crucial that",
     r"it is imperative that",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -58,7 +48,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, ""))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

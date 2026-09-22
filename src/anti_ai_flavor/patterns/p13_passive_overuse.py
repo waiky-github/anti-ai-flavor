@@ -6,18 +6,9 @@ patterns/p13_passive_overuse.py — Pattern 13: Passive overuse
 修复：改为主动语态
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 EN_PATTERNS = [
     r"is (?:considered|believed|thought|seen) (?:to be )?",
@@ -25,7 +16,6 @@ EN_PATTERNS = [
     r"it is (?:considered|believed|thought) that",
     r"it has been (?:shown|demonstrated|proven) that",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -40,7 +30,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, suggested))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

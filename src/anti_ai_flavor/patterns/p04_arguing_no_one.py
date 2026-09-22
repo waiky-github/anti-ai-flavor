@@ -8,18 +8,9 @@ patterns/p04_arguing_no_one.py — Pattern 4: Arguing with no one
 修复：删除虚假反驳，保留正面主张
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 # 中文虚假反驳
 ZH_PATTERNS = [
@@ -36,7 +27,6 @@ EN_PATTERNS = [
     r"This is not simply[^.]*\.",
     r"It'?s not that[^.]*\.",
 ]
-
 
 def match(text: str) -> List[Match]:
     """返回所有命中的 Match 列表"""
@@ -59,7 +49,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, ""))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     """应用修复：删除虚假反驳句"""

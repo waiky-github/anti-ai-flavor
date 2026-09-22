@@ -7,18 +7,9 @@ patterns/p05_forced_triads.py — Pattern 5: Forced triads
 修复：保留，但标记为低优先级（不强制删除）
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 # 中文强制三并列（A、B 和 C）
 ZH_TRIADS = [
@@ -29,7 +20,6 @@ ZH_TRIADS = [
 EN_TRIADS = [
     r"[^,]{2,20},\s*[^,]{2,20},\s*and\s+[^,]{2,20}",
 ]
-
 
 def match(text: str) -> List[Match]:
     """返回所有命中的 Match 列表"""
@@ -53,7 +43,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, full_match))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     """

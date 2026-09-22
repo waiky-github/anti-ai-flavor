@@ -6,17 +6,9 @@ patterns/p25_vagueness_by_design.py — Pattern 25: Vagueness by design
 修复：要求具体化（纯规则无法自动具体化，只标记）
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str  # "" 表示标记但不修改
 
 
 ZH_PATTERNS = [
@@ -41,7 +33,6 @@ EN_PATTERNS = [
     r"\bvarious\b",
 ]
 
-
 def match(text: str) -> List[Match]:
     results = []
     
@@ -62,7 +53,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, ""))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text

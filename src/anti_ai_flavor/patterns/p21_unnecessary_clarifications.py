@@ -7,17 +7,9 @@ patterns/p21_unnecessary_clarifications.py — Pattern 21: Unnecessary clarifica
 修复：删除
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str  # "" 表示删除
 
 
 ZH_PATTERNS = [
@@ -37,7 +29,6 @@ EN_PATTERNS = [
     r"to rephrase",
     r"in simpler terms",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -59,7 +50,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, ""))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

@@ -8,18 +8,9 @@ patterns/p11_rhetorical_questions.py — Pattern 11: Rhetorical questions
 修复：改为陈述句
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 ZH_PATTERNS = [
     r"但这是否意味着",
@@ -36,7 +27,6 @@ EN_PATTERNS = [
     r"how can we (?:not|ignore)",
     r"what if",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -61,7 +51,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, suggested))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

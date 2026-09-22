@@ -5,18 +5,9 @@ patterns/p01_not_x_but_y.py — Pattern 1: Not X but Y
 修复：直接保留后半句，删除对比结构
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 # 中文模式：不是...，而是... / 并非...，而是...
 ZH_PATTERNS = [
@@ -30,7 +21,6 @@ EN_PATTERNS = [
     r"not\s+(?:just\s+)?[^,]*?,\s*but\s+",
     r"not\s+(?!only\s)[^,]*?\s+but\s+(?!also)",
 ]
-
 
 def match(text: str) -> List[Match]:
     """返回所有命中的 Match 列表"""
@@ -77,7 +67,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, suggested))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     """应用修复：保留后半句"""

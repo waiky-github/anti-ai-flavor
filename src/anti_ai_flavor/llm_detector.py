@@ -15,12 +15,6 @@ from typing import List, Optional
 
 import requests
 
-from .core import (
-    PATTERNS_AVAILABLE,
-    rewrite_text,
-    detect_density,
-)
-
 
 @dataclass
 class DetectionResult:

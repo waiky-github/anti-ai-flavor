@@ -9,12 +9,6 @@ import re
 import sys
 from pathlib import Path
 
-import argparse
-import json
-import re
-import sys
-from pathlib import Path
-
 # === Phase 1：25-pattern 体系 ===
 try:
     from .patterns import TIER1_ZH as LEGACY_TIER1_ZH, TIER1_EN as LEGACY_TIER1_EN
@@ -54,24 +48,15 @@ try:
 except ImportError:
     LLM_DETECTOR_AVAILABLE = False
 
+# === Legacy 词表（统一数据源） ===
+from .patterns.tier1_legacy import (
+    TIER1_ZH,
+    TIER1_EN,
+    IDIOM_FILLERS,
+    DENSITY_FILLERS,
+    REDUNDANT_MODIFIERS,
+)
 
-# === 词库（Tier 1/2/3） ===
-
-TIER1_ZH = [
-    "当然", "首先", "值得注意的", "值得注意的是", "值得一提的是", "需要指出的是",
-    "综上所述", "总而言之", "简而言之", "此外", "另外", "与此同时",
-    "展示了", "反映了", "推动了", "赋能", "抓手", "闭环", "链路",
-    "生态", "体系", "机制", "模式", "格局", "态势", "基石", "引擎",
-    "驱动", "引领", "支撑",
-]
-
-TIER1_EN = [
-    "Absolutely!", "absolutely", "Moreover", "It's worth noting", "worth noting", "It is important to note",
-    "It is important to note",  # 大小写变体
-    "Delve", "tapestry", "leverage", "seamless", "robust", "comprehensive",
-    "game-changer", "serves as", "at its core", "In summary", "To sum up",
-    "In conclusion", "To conclude",
-]
 # === 英文规则 ===
 
 SYMMETRY_FILLERS_EN = [
@@ -376,17 +361,14 @@ def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
         text = re.sub(pattern_str, "", text)
 
     # 删除成语 filler
-    from .patterns.tier1_legacy import IDIOM_FILLERS
     for idiom in IDIOM_FILLERS:
         text = text.replace(idiom, "")
 
     # 删除密度填充（在当今.../随着...发展/势在必行/必然选择）
-    from .patterns.tier1_legacy import DENSITY_FILLERS
     for pattern_str in DENSITY_FILLERS:
         text = re.sub(pattern_str, "", text)
 
     # 删除冗余修饰词（系统性的/全面的/整体的等）
-    from .patterns.tier1_legacy import REDUNDANT_MODIFIERS
     for pattern_str in REDUNDANT_MODIFIERS:
         text = re.sub(pattern_str, "", text)
 
@@ -410,21 +392,6 @@ def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
     
     # === 第九步：最终清理 ===
     text = _final_cleanup(text)
-    
-    # === 第十步：LLM 检测（只读，不改写） ===
-    # 如果启用 LLM 检测器，检测 AI 味特征并返回结果
-    # 这里只做简单记录，不改变文本
-    try:
-        from .llm_detector import create_detector
-        detector = create_detector(enabled=False)  # 默认关闭
-        if detector.enabled:
-            detection_results = detector.detect(text)
-            # 可以在这里记录检测结果，但不改变文本
-            if detection_results:
-                import warnings
-                warnings.warn(f"LLM 检测到 {len(detection_results)} 个 AI 味特征")
-    except ImportError:
-        pass
     
     return text.strip()
 

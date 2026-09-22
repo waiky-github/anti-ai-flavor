@@ -7,18 +7,9 @@ patterns/p17_forced_formality.py — Pattern 17: Forced formality
 修复：改为口语化表达（利用→用，leverage→use）
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 ZH_MAPPING = {
     "利用": "用",
@@ -43,7 +34,6 @@ EN_MAPPING = {
     "utilization": "use",
 }
 
-
 def match(text: str) -> List[Match]:
     results = []
     
@@ -64,7 +54,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, informal))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

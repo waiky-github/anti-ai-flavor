@@ -7,12 +7,6 @@ C01-C06 + EDGE06/07 共 8 条高危输入：
 - 断言 rewrite_text() 对白名单外输入返回一字不差的原样（保守化守卫）
 """
 
-import sys
-from pathlib import Path
-
-# Add src to path so we can import the package
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 from anti_ai_flavor import (  # noqa: E402
     rewrite_text,
     detect_all,
@@ -139,9 +133,9 @@ def test_golden_whitelist_rewrite():
     """断言 golden_set.json 中的输入仍能正常 rewrite（白名单内行为不变）"""
     import json
 
-    golden_path = Path(__file__).parent / "golden_set.json"
-    with open(golden_path, encoding="utf-8") as f:
-        data = json.load(f)
+    import importlib.resources as pkg_resources
+    data = pkg_resources.files("anti_ai_flavor").joinpath("golden_set.json").read_text(encoding="utf-8")
+    data = json.loads(data)
 
     cases = data if isinstance(data, list) else data.get("test_cases", [])
 

@@ -7,18 +7,9 @@ patterns/p22_over_structuring.py — Pattern 22: Over-structuring
 修复：简化列表结构
 """
 
+from . import Match
 import re
-from dataclasses import dataclass
 from typing import List
-
-
-@dataclass
-class Match:
-    start: int
-    end: int
-    matched_text: str
-    suggested_fix: str
-
 
 ZH_PATTERNS = [
     r"第[一二三四五]点[是为：:]",
@@ -31,7 +22,6 @@ EN_PATTERNS = [
     r"first[ly]?[，,].*?second[ly]?[，,].*?(?:finally|third)",
     r"1[.)]\s+.*?2[.)]\s+.*?3[.)]\s+",
 ]
-
 
 def match(text: str) -> List[Match]:
     results = []
@@ -53,7 +43,6 @@ def match(text: str) -> List[Match]:
             results.append(Match(start, end, full_match, ""))
     
     return results
-
 
 def fix(text: str, match_obj: Match) -> str:
     return text[:match_obj.start] + match_obj.suggested_fix + text[match_obj.end:]

@@ -10,19 +10,15 @@ Usage:
 import argparse
 import json
 import sys
-from pathlib import Path
-
-# Import from package (src layout)
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from anti_ai_flavor import rewrite_text as rewrite, detect_all as detect
 
 
 def load_golden_set():
     """Load golden test cases from JSON file."""
-    json_path = Path(__file__).parent / "golden_set.json"
-    with open(json_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    import importlib.resources as pkg_resources
+    data = pkg_resources.files("anti_ai_flavor").joinpath("golden_set.json").read_text(encoding="utf-8")
+    return json.loads(data)
 
 
 def run_tests(mode="all"):
