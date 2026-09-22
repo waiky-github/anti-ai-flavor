@@ -18,6 +18,9 @@ from .core import (
     detect_density,
     check_paragraph_density,
 )
+from .scoring import score_text, rewrite_with_report, ScoreResult
+from .watermark import detect_watermark
+from .llm_rewrite import llm_rewrite
 
 __version__ = "0.1.0"
 __all__ = [
@@ -27,4 +30,9 @@ __all__ = [
     "rewrite_file_with_auto_scene",
     "detect_density",
     "check_paragraph_density",
+    "score_text",
+    "rewrite_with_report",
+    "ScoreResult",
+    "detect_watermark",
+    "llm_rewrite",
 ]

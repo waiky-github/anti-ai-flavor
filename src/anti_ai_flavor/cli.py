@@ -3,7 +3,7 @@
 anti_ai_flavor/cli.py — CLI 入口
 
 用法：
-  anti-ai-flavor rewrite [file] [--scene default] [-o output]
+  anti-ai-flavor rewrite [file] [--scene default] [-o output] [--report] [--watermark] [--llm]
   anti-ai-flavor density [file]
   anti-ai-flavor check-docs <docs_dir>
   anti-ai-flavor detect [file] [--provider mock] [--json]
@@ -11,11 +11,15 @@ anti_ai_flavor/cli.py — CLI 入口
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .core import rewrite_text, detect_density, detect_all
 from .llm_detector import create_detector
+from .scoring import rewrite_with_report, score_text
+from .watermark import detect_watermark
+from .llm_rewrite import llm_rewrite
 
 
 def main():
@@ -29,6 +33,11 @@ def main():
     rewrite_parser.add_argument("--output", "-o", help="输出文件（默认 stdout）")
     rewrite_parser.add_argument("--diff", action="store_true", help="显示 diff")
     rewrite_parser.add_argument("--strict", action="store_true", help="严格模式：漏掉 Tier 1 词时报错")
+    rewrite_parser.add_argument("--report", action="store_true", help="输出改写评分报告（JSON）")
+    rewrite_parser.add_argument("--watermark", action="store_true", help="检测并清理水印/异常字符")
+    rewrite_parser.add_argument("--llm", action="store_true", help="启用 LLM 后处理改写（需配置 API Key）")
+    rewrite_parser.add_argument("--llm-model", default="glm-4-flash", help="LLM 模型（默认 glm-4-flash）")
+    rewrite_parser.add_argument("--llm-base-url", default="https://open.bigmodel.cn/api/paas/v4", help="LLM base URL")
 
     # density 子命令
     density_parser = subparsers.add_parser("density", help="检测密度")
@@ -57,13 +66,61 @@ def main():
         else:
             raw = sys.stdin.read()
 
-        result = rewrite_text(raw, scene=args.scene)
+        # 水印预处理
+        if args.watermark:
+            wm_result = detect_watermark(raw, clean=True)
+            if wm_result.warnings:
+                for w in wm_result.warnings:
+                    print(f"ℹ️ 水印清理: {w}", file=sys.stderr)
+            raw = wm_result.cleaned_text
 
+        # 评分报告
+        if args.report:
+            rewritten, report = rewrite_with_report(raw, scene=args.scene)
+        else:
+            rewritten = rewrite_text(raw, scene=args.scene)
+            report = None
+
+        # LLM 后处理
+        if args.llm:
+            try:
+                rewritten = llm_rewrite(
+                    rewritten,
+                    base_url=args.llm_base_url,
+                    model=args.llm_model,
+                    scene=args.scene,
+                )
+                if report is not None:
+                    report["llm_applied"] = True
+                    report["llm_model"] = args.llm_model
+            except (ValueError, ImportError, RuntimeError) as e:
+                print(f"❌ LLM rewrite 失败: {e}", file=sys.stderr)
+                sys.exit(1)
+
+        # 输出
         if args.output:
-            Path(args.output).write_text(result, encoding="utf-8")
+            Path(args.output).write_text(rewritten, encoding="utf-8")
             print(f"已写入: {args.output}", file=sys.stderr)
         else:
-            print(result)
+            if args.report and report is not None:
+                output = {
+                    "original": report["original"],
+                    "rewritten": report["rewritten"],
+                    "changed": report["changed"],
+                    "score_before": report["score_before"],
+                    "score_after": report["score_after"],
+                }
+                if report.get("llm_applied"):
+                    output["llm_applied"] = True
+                    output["llm_model"] = report["llm_model"]
+                print(json.dumps(output, ensure_ascii=False, indent=2))
+            else:
+                print(rewritten)
+
+        if args.report and report is not None:
+            score_before = report["score_before"]["score"]
+            score_after = report["score_after"]["score"]
+            print(f"📊 评分: {score_before} → {score_after}", file=sys.stderr)
 
     # density 子命令
     elif args.command == "density":
