@@ -35,8 +35,8 @@ def main():
     rewrite_parser.add_argument("--strict", action="store_true", help="严格模式：漏掉 Tier 1 词时报错")
     rewrite_parser.add_argument("--report", action="store_true", help="输出改写评分报告（JSON）")
     rewrite_parser.add_argument("--watermark", action="store_true", help="检测并清理水印/异常字符")
-    rewrite_parser.add_argument("--llm", action="store_true", default=True, help="启用 LLM 后处理改写（默认开启，未配置 API Key 时自动降级）")
-    rewrite_parser.add_argument("--no-llm", action="store_true", help="关闭 LLM 后处理")
+    rewrite_parser.add_argument("--llm", action="store_true", default=False, help="启用 LLM 后处理改写（默认关闭，需显式传入）")
+    rewrite_parser.add_argument("--no-llm", action="store_true", help="关闭 LLM 后处理（默认已关闭，此参数保留用于兼容）")
     rewrite_parser.add_argument("--llm-model", default="glm-4-flash", help="LLM 模型（默认 glm-4-flash）")
     rewrite_parser.add_argument("--llm-base-url", default="https://open.bigmodel.cn/api/paas/v4", help="LLM base URL")
 
@@ -82,7 +82,7 @@ def main():
             rewritten = rewrite_text(raw, scene=args.scene)
             report = None
 
-        # LLM 后处理（默认开启，未配置 API Key 时自动降级到纯规则）
+        # LLM 后处理（默认关闭，显式传入 --llm 才启用）
         use_llm = args.llm and not args.no_llm
         if use_llm:
             try:
@@ -93,6 +93,24 @@ def main():
                     scene=args.scene,
                 )
                 if report is not None:
+                    # LLM 成功后同步更新报告，避免 rewritten / score_after 与真实输出不一致
+                    report["rewritten"] = rewritten
+                    report["changed"] = True
+                    report["score_after"] = {
+                        "score": score_text(rewritten).score,
+                        "raw": score_text(rewritten).raw,
+                        "summary": score_text(rewritten).summary,
+                        "hits": [
+                            {
+                                "category": h.category,
+                                "pattern_id": h.pattern_id,
+                                "matched_text": h.matched_text,
+                                "penalty": h.penalty,
+                                "note": h.note,
+                            }
+                            for h in score_text(rewritten).hits
+                        ],
+                    }
                     report["llm_applied"] = True
                     report["llm_model"] = args.llm_model
             except (ValueError, ImportError, RuntimeError) as e:
@@ -149,11 +167,13 @@ def main():
 
         print(f"检查 {len(md_files)} 个文档...", file=sys.stderr)
         issues_found = False
+        issue_files = []
         for f in md_files:
             text = f.read_text(encoding="utf-8")
             result = detect_density(text)
             if result["should_rewrite"]:
                 issues_found = True
+                issue_files.append(f)
                 print(f"\n⚠️ {f}:", file=sys.stderr)
                 for w in result["warnings"]:
                     print(f"  - {w}", file=sys.stderr)
@@ -163,7 +183,7 @@ def main():
                     print(f"  Tier 3 词: {', '.join(result['tier3_words'])}", file=sys.stderr)
 
         if issues_found:
-            print(f"\n❌ {len([f for f in md_files if detect_density(f.read_text(encoding='utf-8'))['should_rewrite']])} 个文档需要重写", file=sys.stderr)
+            print(f"\n❌ {len(issue_files)} 个文档需要重写", file=sys.stderr)
             sys.exit(1)
         else:
             print("\n✅ 所有文档密度正常", file=sys.stderr)

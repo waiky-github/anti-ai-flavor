@@ -31,6 +31,9 @@ dev = [
     "pytest>=7.0",
     "pytest-cov",
 ]
+llm = [
+    "openai",
+]
 
 [project.scripts]
 anti-ai-flavor = "anti_ai_flavor.cli:main"

@@ -186,7 +186,7 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
         ("p07_artificial_imbalance", r"[^。]*?不仅[^。]*?而且[^。]*?[。！]"),
         ("p08_meta_commentary", r"值得注意的是[^。]*?[。！]"),
         ("p09_false_authority", r"研究表明[^。]*?[。！]"),
-        ("p10_list_fatigue", r"[^。]*?[，,][^。]*?[，,][^。]*?[。！]"),
+        ("p10_list_fatigue", r"[^。]*?[，,][^。]*?[，,][^。]*?[，,][^。]*?[。！]"),
     ]
 
     for pattern_id, pattern in pattern_groups:

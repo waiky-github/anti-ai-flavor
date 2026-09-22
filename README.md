@@ -13,10 +13,9 @@ pip install anti-ai-flavor
 ```python
 from anti_ai_flavor import rewrite_text, detect_all
 
-text = "首先，值得注意的是，这个方案不仅提升了效率，而且增强了体验。"
+text = "这个方案提升了效率，也增强了稳定性。"
 clean = rewrite_text(text)
 print(clean)
-# => "这个方案提升了效率，增强了体验。"
 
 result = detect_all(text)
 print(result)
@@ -25,8 +24,20 @@ print(result)
 ## CLI
 
 ```bash
-# 重写文本
+# 重写文本（纯规则，LLM 默认关闭）
 anti-ai-flavor rewrite input.md -o output.md
+
+# 显式启用 LLM 后处理改写
+anti-ai-flavor rewrite input.md --llm -o output.md
+
+# 输出评分报告（JSON）
+anti-ai-flavor rewrite input.md --report
+
+# 检测并清理水印/异常字符
+anti-ai-flavor rewrite input.md --watermark
+
+# 指定 LLM 模型和 base URL
+anti-ai-flavor rewrite input.md --llm --llm-model gpt-4o --llm-base-url https://api.openai.com/v1
 
 # 从 stdin 读取
 cat input.md | anti-ai-flavor rewrite
