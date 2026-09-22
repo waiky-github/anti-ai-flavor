@@ -187,6 +187,21 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
         ("p08_meta_commentary", r"值得注意的是[^。]*?[。！]"),
         ("p09_false_authority", r"研究表明[^。]*?[。！]"),
         ("p10_list_fatigue", r"[^。]*?[，,][^。]*?[，,][^。]*?[，,][^。]*?[。！]"),
+        ("p11_rhetorical_questions", r"但这是否意味着[^。]*?[。？]"),
+        ("p12_excessive_transitions", r"[^。]*?(?:此外|另外)[^。]*?[。！]"),
+        ("p13_passive_overuse", r"(?:is|was|been)\s+(?:considered|believed|thought|found|discovered|shown)\s+(?:to\s+be)?[^。]*?[。.]"),
+        ("p14_nominalization", r"(?:进行|做出)\s*[^。]*?(?:优化|改进|决定|选择|部署|实施)[^。]*?[。！]"),
+        ("p15_abstract_subjects", r"(?:该技术的应用|该技术的实现|这一举措)[^。]*?[。！]"),
+        ("p16_formulaic_closers", r"(?:综上所述|总之|简而言之)[^。]*?[。！]"),
+        ("p17_forced_formality", r"(?:利用|运用|鉴于|遵照)\s*[^。]*?[。！]"),
+        ("p18_repetition_rhythm", r"[^。]*?(?:高效|稳定|可扩展|fast|reliable|scalable)[^。]*?(?:、[^。]*?){2,}[。！]"),
+        ("p19_over_qualification", r"(?:极为|极其|非常| highly|extremely|quite)\s*[^。]*?[。！]"),
+        ("p20_stilted_coordination", r"既[^。]*?[，,][\s]*又[^。]*?[。！]"),
+        ("p21_unnecessary_clarifications", r"(?:换句话说|换言之|in\s+other\s+words|that\s+is\s+to\s+say)[^。]*?[。！]"),
+        ("p22_over_structuring", r"第[一二三四五][点项][是为：:][^。]*?[。！]"),
+        ("p23_false_precision", r"\d+\.\d+%|数百万|数十亿|billions?\s+(?:of\s+)?(?:dollars|users|people)"),
+        ("p24_moralizing", r"(?:我们必须|我们应该|大家应该|we\s+must|we\s+should)[^。]*?[。！]"),
+        ("p25_vagueness_by_design", r"(?:各种|诸多|若干|numerous|several|various)[^。]*?[。！]"),
     ]
 
     for pattern_id, pattern in pattern_groups:

@@ -220,7 +220,6 @@ def main():
                     print(f"  Tier 3 词: {', '.join(result['tier3_words'])}", file=sys.stderr)
 
                 if args.fix:
-                    from .core import rewrite_text
                     rewritten = rewrite_text(text)
                     if rewritten != text:
                         f.write_text(rewritten, encoding="utf-8")
@@ -251,9 +250,15 @@ def main():
 
         results = detector.detect(raw)
 
+        # mock 检测器标注
+        is_mock = args.provider == "mock"
+        mock_label = " (mock only)" if is_mock else ""
+
         if args.json:
             output = {
                 "text": raw,
+                "provider": args.provider,
+                "mock_only": is_mock,
                 "detections": [
                     {
                         "pattern_id": r.pattern_id,
@@ -263,14 +268,14 @@ def main():
                         "suggestion": r.suggestion,
                     }
                     for r in results
-                ]
+                ],
             }
             print(json.dumps(output, ensure_ascii=False, indent=2))
         else:
             if not results:
-                print("✅ 未检测到 AI 味特征")
+                print(f"✅ 未检测到 AI 味特征{mock_label}")
             else:
-                print(f"⚠️ 检测到 {len(results)} 个 AI 味特征：")
+                print(f"⚠️ 检测到 {len(results)} 个 AI 味特征{mock_label}：")
                 for r in results:
                     print(f"  [{r.pattern_id}] {r.pattern_name} (置信度: {r.confidence:.0%})")
                     print(f"    匹配: {r.matched_text}")

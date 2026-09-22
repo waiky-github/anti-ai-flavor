@@ -87,9 +87,10 @@ def _replace_homoglyphs(text: str) -> tuple[str, int]:
 
     # 常见同形字映射
     for src, dst in _HOMOGLYPH_MAP.items():
-        if src in text:
+        occurrences = text.count(src)
+        if occurrences:
             text = text.replace(src, dst)
-            count += text.count(dst)  # 近似计数
+            count += occurrences
 
     return text, count
 

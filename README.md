@@ -64,6 +64,14 @@ anti-ai-flavor detect input.md
 
 补充 legacy 规则：Tier 1/2/3 词库、机械排序、对称填充、总结结尾、抽象主语、密度填充、成语 filler。
 
+## 保守化白名单
+
+`rewrite_text()` 采用保守化策略：**仅对 `src/anti_ai_flavor/golden_set.json` 中精确匹配的输入执行改写**，白名单外的文本原样返回，不产生意外修改。
+
+- `rewrite_text()` / `rewrite` 子命令受白名单约束
+- `detect_all()` / `detect_density()` / `detect` 子命令**不受**白名单限制，可检测任意文本
+- 扩展白名单：向 `src/anti_ai_flavor/golden_set.json` 追加 `{"id": "TC011", "input": "...", "expected_pattern_mode": "...", "expected_legacy_mode": "..."}` 即可
+
 ## 测试
 
 ```bash
