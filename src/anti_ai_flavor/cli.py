@@ -35,7 +35,8 @@ def main():
     rewrite_parser.add_argument("--strict", action="store_true", help="严格模式：漏掉 Tier 1 词时报错")
     rewrite_parser.add_argument("--report", action="store_true", help="输出改写评分报告（JSON）")
     rewrite_parser.add_argument("--watermark", action="store_true", help="检测并清理水印/异常字符")
-    rewrite_parser.add_argument("--llm", action="store_true", help="启用 LLM 后处理改写（需配置 API Key）")
+    rewrite_parser.add_argument("--llm", action="store_true", default=True, help="启用 LLM 后处理改写（默认开启，未配置 API Key 时自动降级）")
+    rewrite_parser.add_argument("--no-llm", action="store_true", help="关闭 LLM 后处理")
     rewrite_parser.add_argument("--llm-model", default="glm-4-flash", help="LLM 模型（默认 glm-4-flash）")
     rewrite_parser.add_argument("--llm-base-url", default="https://open.bigmodel.cn/api/paas/v4", help="LLM base URL")
 
@@ -81,8 +82,9 @@ def main():
             rewritten = rewrite_text(raw, scene=args.scene)
             report = None
 
-        # LLM 后处理
-        if args.llm:
+        # LLM 后处理（默认开启，未配置 API Key 时自动降级到纯规则）
+        use_llm = args.llm and not args.no_llm
+        if use_llm:
             try:
                 rewritten = llm_rewrite(
                     rewritten,
@@ -94,8 +96,8 @@ def main():
                     report["llm_applied"] = True
                     report["llm_model"] = args.llm_model
             except (ValueError, ImportError, RuntimeError) as e:
-                print(f"❌ LLM rewrite 失败: {e}", file=sys.stderr)
-                sys.exit(1)
+                print(f"⚠️ LLM rewrite 降级: {e}", file=sys.stderr)
+                # 不退出，继续用纯规则结果
 
         # 输出
         if args.output:
