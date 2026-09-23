@@ -81,3 +81,13 @@ pytest tests/ -v
 ## License
 
 MIT
+
+---
+
+## 📮 关注我们
+
+**公众号：AI Aperture** —— 分享 AI 工程实践、多 Agent 系统与开源项目经验。
+
+![AI Aperture 公众号二维码](assets/ai-aperture-qr.jpg)
+
+扫码关注，获取项目更新与更多技术内容。
