@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .core import rewrite_text
 
@@ -61,6 +61,13 @@ SYSTEM_PROMPT = """你是中文写作专家，正在以「真人资深工程师�
 动词/结果用口语（搭了/做出来/支撑/跑起来/打通）
 不要全篇口语化（不像工程师）
 不要全篇书面化（不像真人）
+
+【项目细节补充规则】
+如果用户提供了 project_context（通用细节）或 project_sections（按段落标题精细控制）：
+- 只补与原文内容相关的细节，不扩展原文没有的功能模块
+- 数字/日期/技术栈以原文为准，项目细节只补「叙事性描述」（团队规模/项目周期/业务场景/解决的痛点）
+- 按段落提供的细节，只在改写到对应段落时使用；其他段落忽略
+- 如果提供的细节与原文矛盾，以原文为准（不发明事实）
 
 只输出改写后文本，不要任何解释/思考过程/格式包装。"""
 
@@ -123,6 +130,28 @@ def _strip_thinking(content: str) -> str:
     return cleaned
 
 
+def _build_user_prompt(
+    text: str,
+    project_context: Optional[str] = None,
+    project_sections: Optional[Dict[str, str]] = None,
+) -> str:
+    """构造 user 角色 prompt：待改写文本 + 可选项目细节。"""
+    parts = [f"---待改写文本---\n{text}\n---"]
+
+    has_context = bool(project_context)
+    has_sections = bool(project_sections)
+    if has_context or has_sections:
+        parts.append("\n【项目细节（可选）】改写时可参考以下细节补充「叙事性描述」：")
+        if has_context:
+            parts.append(f"\n[通用细节]\n{project_context}")
+        if has_sections:
+            parts.append("\n[按段落标题]")
+            for title, detail in project_sections.items():
+                parts.append(f"- 「{title}」: {detail}")
+
+    return "\n".join(parts)
+
+
 def _llm_call_once(
     text: str,
     *,
@@ -132,6 +161,8 @@ def _llm_call_once(
     temperature: float,
     max_tokens: int,
     timeout: float,
+    project_context: Optional[str] = None,
+    project_sections: Optional[Dict[str, str]] = None,
 ) -> str:
     """单段 LLM 调用：构造 prompt → 调 API → 剥 thinking。"""
     try:
@@ -141,7 +172,7 @@ def _llm_call_once(
             "llm_rewrite 需要 openai 包，请先 `pip install openai`"
         ) from e
 
-    user_prompt = f"---待改写文本---\n{text}\n---"
+    user_prompt = _build_user_prompt(text, project_context, project_sections)
 
     client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
     try:
@@ -179,6 +210,8 @@ def llm_rewrite(
     max_tokens: int = 8000,
     timeout: float = 60.0,
     max_chunk_chars: int = 1500,
+    project_context: Optional[str] = None,
+    project_sections: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     使用 LLM 对文本做结构层面的人类化改写。
@@ -191,6 +224,8 @@ def llm_rewrite(
       scene：场景，透传给 rewrite_text() 先做 pattern 预清洗，再做 LLM 后处理
       temperature / max_tokens：控制改写自由度（默认 max_tokens=8000，给 minimax-M3 thinking 留足额度；实测 thinking 可占 4000+ token）
       max_chunk_chars：长文本切分阈值（默认 1500 字符），避免单段太长导致 thinking 占满 max_tokens
+      project_context：自由文本项目细节（团队规模/项目周期/业务场景/解决的痛点），LLM 改写时参考补「叙事性描述」
+      project_sections：按段落标题精细控制，dict[段标题, 细节]。仅改写到对应段落时使用，其他段落忽略
 
     返回：
       改写后的文本
@@ -233,9 +268,12 @@ def llm_rewrite(
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            project_context=project_context,
+            project_sections=project_sections,
         )
 
     # 多段：每段独立调用，最后用空行拼接
+    # 项目细节在每段都传（LLM 自己识别是否相关），不做段落级匹配
     rewritten_chunks = []
     for chunk in chunks:
         rewritten_chunks.append(
@@ -247,6 +285,8 @@ def llm_rewrite(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                project_context=project_context,
+                project_sections=project_sections,
             )
         )
     return "\n\n".join(rewritten_chunks)

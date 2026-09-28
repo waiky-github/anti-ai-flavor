@@ -19,6 +19,7 @@ import pytest
 
 from anti_ai_flavor.llm_rewrite import (
     SYSTEM_PROMPT,
+    _build_user_prompt,
     _split_long_text,
     llm_rewrite,
 )
@@ -201,3 +202,92 @@ def test_llm_rewrite_prompt_includes_few_shot_to_llm():
     assert "4×A100 80GB" in system_msg["content"]
     assert "TP=4 张量并行" in system_msg["content"]
     assert "面向多并发推理场景" in system_msg["content"]
+
+
+# ---- v0.2.11 项目细节补充 ----
+
+def test_system_prompt_has_project_detail_rules():
+    """v0.2.11 prompt 必须明确「项目细节补充规则」。"""
+    assert "项目细节补充规则" in SYSTEM_PROMPT
+    # 必须禁止"发明事实"
+    assert "不发明事实" in SYSTEM_PROMPT or "原文为准" in SYSTEM_PROMPT
+
+
+def test_build_user_prompt_no_context_returns_text_only():
+    """无 project context 时，prompt 应只含待改写文本，不含「项目细节」块。"""
+    prompt = _build_user_prompt("这是测试文本")
+    assert "---待改写文本---" in prompt
+    assert "这是测试文本" in prompt
+    assert "项目细节" not in prompt
+
+
+def test_build_user_prompt_with_project_context():
+    """含 project_context 时，prompt 应附「项目细节（可选）」+ 通用细节块。"""
+    ctx = "AI 平台项目是 5 人团队 3 个月搭起来，QPS 从 200 提到 1500"
+    prompt = _build_user_prompt("原文内容", project_context=ctx)
+    assert "---待改写文本---" in prompt
+    assert "原文内容" in prompt
+    assert "项目细节（可选）" in prompt
+    assert "[通用细节]" in prompt
+    assert ctx in prompt
+
+
+def test_build_user_prompt_with_project_sections():
+    """含 project_sections 时，prompt 应附「按段落标题」列表。"""
+    sections = {
+        "建设企业私有化 AI 平台": "团队 5 人，3 个月落地，对接 3 个业务线",
+        "开发企业 AI 辅助工具链": "内部 100+ 研发使用，覆盖代码检索/文档问答",
+    }
+    prompt = _build_user_prompt("原文", project_sections=sections)
+    assert "项目细节（可选）" in prompt
+    assert "[按段落标题]" in prompt
+    assert "建设企业私有化 AI 平台" in prompt
+    assert "团队 5 人" in prompt
+    assert "开发企业 AI 辅助工具链" in prompt
+
+
+def test_build_user_prompt_with_both_context_and_sections():
+    """通用细节 + 按段落标题同时提供时，prompt 应同时包含两个块。"""
+    prompt = _build_user_prompt(
+        "原文",
+        project_context="通用事实",
+        project_sections={"段1": "细节1"},
+    )
+    assert "[通用细节]" in prompt
+    assert "通用事实" in prompt
+    assert "[按段落标题]" in prompt
+    assert "细节1" in prompt
+
+
+def test_llm_rewrite_passes_project_context_to_llm():
+    """project_context 必须透传到 LLM 的 user prompt。"""
+    mock_openai = _mock_openai_with_response("OK。")
+    ctx = "团队规模 5 人，2026 年 3 月上线"
+    with patch.dict(os.environ, {"ANTI_AI_LLM_API_KEY": ""}, clear=False):
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            llm_rewrite("原文", api_key="sk-test", project_context=ctx)
+
+    call_kwargs = mock_openai.OpenAI.return_value.chat.completions.create.call_args
+    user_msg = next(
+        m for m in call_kwargs.kwargs["messages"] if m["role"] == "user"
+    )
+    # 验证 LLM 实际收到了 project_context
+    assert ctx in user_msg["content"]
+    assert "项目细节" in user_msg["content"]
+
+
+def test_llm_rewrite_passes_project_sections_to_llm():
+    """project_sections 必须透传到 LLM 的 user prompt。"""
+    mock_openai = _mock_openai_with_response("OK。")
+    sections = {"建设企业私有化 AI 平台": "团队 5 人 3 个月搭起来"}
+    with patch.dict(os.environ, {"ANTI_AI_LLM_API_KEY": ""}, clear=False):
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            llm_rewrite("原文", api_key="sk-test", project_sections=sections)
+
+    call_kwargs = mock_openai.OpenAI.return_value.chat.completions.create.call_args
+    user_msg = next(
+        m for m in call_kwargs.kwargs["messages"] if m["role"] == "user"
+    )
+    assert "建设企业私有化 AI 平台" in user_msg["content"]
+    assert "团队 5 人" in user_msg["content"]
+    assert "[按段落标题]" in user_msg["content"]

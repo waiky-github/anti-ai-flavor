@@ -57,6 +57,29 @@ def main():
         default=70,
         help="--strategy auto 模式下，score_text 评分低于此值时触发 LLM 兜底（默认 70）",
     )
+    rewrite_parser.add_argument(
+        "--project-context",
+        default=None,
+        help=(
+            "项目细节（自由文本），LLM 改写时参考补「叙事性描述」。"
+            "例：「AI 平台项目是 5 人团队 3 个月搭起来的，业务方是国内 TOP 3 存储厂商，"
+            "上线后推理 QPS 从 200 提到 1500」"
+        ),
+    )
+    rewrite_parser.add_argument(
+        "--project-context-file",
+        default=None,
+        help="从文件读取项目细节（每行一段，纯文本）。优先级低于 --project-context",
+    )
+    rewrite_parser.add_argument(
+        "--project-sections-file",
+        default=None,
+        help=(
+            "从 JSON 文件读取按段落标题精细控制的项目细节。"
+            "格式: {\"段标题1\": \"细节1\", \"段标题2\": \"细节2\"}"
+            "LLM 改写到对应段落时使用对应细节。"
+        ),
+    )
 
     # density 子命令
     density_parser = subparsers.add_parser("density", help="检测密度")
@@ -88,12 +111,45 @@ def main():
 
             返回 (rewritten, updated_report)。report_dict 为 None 时不更新报告。
             """
+            # 解析项目细节：--project-context > --project-context-file
+            project_context = args.project_context
+            if project_context is None and args.project_context_file:
+                try:
+                    project_context = Path(args.project_context_file).read_text(
+                        encoding="utf-8"
+                    ).strip()
+                except OSError as exc:
+                    print(
+                        f"⚠️ 读取 --project-context-file 失败: {exc}",
+                        file=sys.stderr,
+                    )
+                    project_context = None
+
+            # 解析按段落标题的项目细节
+            project_sections = None
+            if args.project_sections_file:
+                try:
+                    raw = Path(args.project_sections_file).read_text(
+                        encoding="utf-8"
+                    )
+                    project_sections = json.loads(raw)
+                    if not isinstance(project_sections, dict):
+                        raise ValueError("JSON must be an object")
+                except (OSError, json.JSONDecodeError, ValueError) as exc:
+                    print(
+                        f"⚠️ 解析 --project-sections-file 失败: {exc}",
+                        file=sys.stderr,
+                    )
+                    project_sections = None
+
             try:
                 llm_result = llm_rewrite(
                     text,
                     base_url=args.llm_base_url,
                     model=args.llm_model,
                     scene=args.scene,
+                    project_context=project_context,
+                    project_sections=project_sections,
                 )
             except (ValueError, ImportError, RuntimeError) as exc:
                 print(f"⚠️ LLM rewrite 降级: {exc}", file=sys.stderr)
