@@ -1,0 +1,32 @@
+# pre-commit hook for anti-ai-flavor (public CLI repo)
+#
+# 2026-09-28: 双保险防止 ops/PROJECT_STATE.md 误入库
+# .gitignore 已经排除 ops/，但如果用户手动 `git add -f` 或绕过 gitignore
+# （如 git config --local core.excludesfile 指向别处），hook 是最后一道。
+#
+# 如果 PROJECT_STATE.md 出现在 index 里，阻止 commit，提示同步到
+# ~/Projects/anti-ai-flavor-internal/ 仓库。
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+if git ls-files --error-unmatch ops/PROJECT_STATE.md >/dev/null 2>&1; then
+    cat <<EOF
+❌ ops/PROJECT_STATE.md 试图入库 anti-ai-flavor 公开仓库
+
+PROJECT_STATE.md 含内部决策 / 个人邮箱 / 公司名等敏感内容，
+按 public-repo-preflight 铁律不应入公开仓库。
+
+修复：
+1. git rm --cached ops/PROJECT_STATE.md
+2. 同步到内部仓库：~/Projects/anti-ai-flavor-internal/
+   cd ~/Projects/anti-ai-flavor-internal/
+   ./scripts/sync-internal-state.sh down
+
+绕过（仅用于紧急调试）： git commit --no-verify
+EOF
+    exit 1
+fi
+
+exit 0
