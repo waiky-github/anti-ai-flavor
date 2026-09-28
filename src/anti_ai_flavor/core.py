@@ -611,16 +611,23 @@ def _legacy_rewrite(text: str, scene: str = "default") -> str:
 
 # === 重写逻辑 ===
 
-def rewrite_text(text: str, scene: str = "default") -> str:
+def rewrite_text(text: str, scene: str = "default", *, whitelist_strict: bool = False) -> str:
     """
     重写文本，删除 AI 味。
 
     scene 可选：coder_issue_reply / coder_pr / coder_commit / ops_troubleshoot / ops_log / creative_doc
+
+    whitelist_strict (2026-09-28 已默认放开):
+      - False（默认）：所有输入都跑规则版，不再受 golden_set.json 白名单限制。
+        这是为了让工具真正能处理"非测试用"的真实文本（简历、技术文档、营销稿等）。
+      - True：保留旧保守行为，仅 golden_set.json 中的精确输入才重写，其他原样返回。
+        仅在用户明确要求"严格保守"时使用。
     """
-    # ========== 白名单守卫：仅 golden_set.json 中的精确输入才重写 ==========
-    stripped = text.strip()
-    if not _is_golden_whitelisted(stripped):
-        return text
+    # ========== 白名单守卫（可选，默认不启用） ==========
+    if whitelist_strict:
+        stripped = text.strip()
+        if not _is_golden_whitelisted(stripped):
+            return text
     # ========== Phase 1：25-pattern 体系（优先使用） ==========
     if PATTERNS_AVAILABLE:
         return _rewrite_with_patterns(text, scene)

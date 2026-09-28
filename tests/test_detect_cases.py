@@ -105,16 +105,55 @@ def test_high_risk_detection():
     assert failed == 0, f"{failed} 个高危输入未检出 AI 信号"
 
 
-def test_whitelist_passthrough():
-    """断言 rewrite_text 对白名单外高危输入返回一字不差的原样"""
+def test_whitelist_default_open():
+    """断言默认（不传 whitelist_strict）下，白名单外输入会被正常 rewrite。
+
+    2026-09-28 放开白名单：默认让 rewrite_text 对任意输入都跑规则版，
+    不再要求必须是 golden_set.json 中的精确输入。这是为了让工具真正能
+    处理真实文本（简历、技术文档、营销稿等），而不是只能改写测试样本。
+
+    对比 `test_whitelist_strict_legacy`：传 whitelist_strict=True 时仍保留旧保守行为。
+    """
     print("=" * 70)
-    print("Part 2: 白名单外原样返回（rewrite_text 一字不差）")
+    print("Part 2: 白名单放开后，rewrite_text 能正常处理非白名单输入")
     print("=" * 70)
 
     passed = 0
     failed = 0
     for name, text in HIGH_RISK_CASES:
-        result = rewrite_text(text)
+        try:
+            result = rewrite_text(text)  # 默认 whitelist_strict=False
+            ok = isinstance(result, str) and len(result) > 0
+            status = "✅" if ok else "❌"
+            note = "改写" if result != text else "原样保留"
+            print(f"  {status} {name}: {len(text)}→{len(result)} 字符 ({note})")
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+                print(f"     输入: {text!r}")
+                print(f"     输出: {result!r}")
+        except Exception as exc:
+            failed += 1
+            print(f"  ❌ {name}: 抛异常 {exc!r}")
+
+    print(f"\n白名单放开测试: {passed}/{len(HIGH_RISK_CASES)} 通过\n")
+    assert failed == 0, f"{failed} 个白名单外输入被改坏"
+
+
+def test_whitelist_strict_legacy():
+    """断言传 whitelist_strict=True 时保留旧保守行为：白名单外原样返回。
+
+    这是 2026-09-28 之前的默认行为；现在仅在用户显式要求"严格保守"时使用。
+    """
+    print("=" * 70)
+    print("Part 2b: whitelist_strict=True 保留旧保守行为")
+    print("=" * 70)
+
+    passed = 0
+    failed = 0
+    for name, text in HIGH_RISK_CASES:
+        result = rewrite_text(text, whitelist_strict=True)
         ok = result == text
         status = "✅" if ok else "❌"
         print(f"  {status} {name}: {'原样保留' if ok else '被修改!'}")
@@ -125,7 +164,7 @@ def test_whitelist_passthrough():
         else:
             passed += 1
 
-    print(f"\n白名单守卫: {passed}/{len(HIGH_RISK_CASES)} 通过\n")
+    print(f"\n白名单守卫（strict）: {passed}/{len(HIGH_RISK_CASES)} 通过\n")
     assert failed == 0, f"{failed} 个白名单外输入被 rewrite 修改"
 
 
@@ -169,7 +208,8 @@ def test_golden_whitelist_rewrite():
 
 if __name__ == "__main__":
     test_high_risk_detection()
-    test_whitelist_passthrough()
+    test_whitelist_default_open()
+    test_whitelist_strict_legacy()
     test_golden_whitelist_rewrite()
     print("=" * 70)
     print("✅ 全部检测用例通过")

@@ -39,6 +39,24 @@ def main():
     rewrite_parser.add_argument("--no-llm", action="store_true", help="关闭 LLM 后处理（默认已关闭，此参数保留用于兼容）")
     rewrite_parser.add_argument("--llm-model", default="glm-4-flash", help="LLM 模型（默认 glm-4-flash）")
     rewrite_parser.add_argument("--llm-base-url", default="https://open.bigmodel.cn/api/paas/v4", help="LLM base URL")
+    rewrite_parser.add_argument(
+        "--strategy",
+        choices=["rules", "rules+llm", "llm-only", "auto"],
+        default="rules",
+        help=(
+            "改写策略（2026-09-28 新增）："
+            "rules=仅规则（默认，向后兼容）；"
+            "rules+llm=规则清洗后 LLM 后处理（推荐工作流，需要 ANTI_AI_LLM_API_KEY）；"
+            "llm-only=直接 LLM（跳过规则，需要 ANTI_AI_LLM_API_KEY）；"
+            "auto=按 score_text 评分自动决策（score < llm_trigger_threshold 时触发 LLM）。"
+        ),
+    )
+    rewrite_parser.add_argument(
+        "--llm-trigger-threshold",
+        type=int,
+        default=70,
+        help="--strategy auto 模式下，score_text 评分低于此值时触发 LLM 兜底（默认 70）",
+    )
 
     # density 子命令
     density_parser = subparsers.add_parser("density", help="检测密度")
@@ -65,6 +83,45 @@ def main():
     if args.command == "rewrite":
         files = args.file or []
 
+        def _apply_llm_postprocess(text: str, report_dict: dict | None) -> tuple[str, dict | None]:
+            """对规则清洗后的文本做 LLM 兜底；失败 fallback 到原文本。
+
+            返回 (rewritten, updated_report)。report_dict 为 None 时不更新报告。
+            """
+            try:
+                llm_result = llm_rewrite(
+                    text,
+                    base_url=args.llm_base_url,
+                    model=args.llm_model,
+                    scene=args.scene,
+                )
+            except (ValueError, ImportError, RuntimeError) as exc:
+                print(f"⚠️ LLM rewrite 降级: {exc}", file=sys.stderr)
+                return text, report_dict
+
+            if report_dict is not None:
+                report_dict["rewritten"] = llm_result
+                report_dict["changed"] = True
+                score_after = score_text(llm_result)
+                report_dict["score_after"] = {
+                    "score": score_after.score,
+                    "raw": score_after.raw,
+                    "summary": score_after.summary,
+                    "hits": [
+                        {
+                            "category": h.category,
+                            "pattern_id": h.pattern_id,
+                            "matched_text": h.matched_text,
+                            "penalty": h.penalty,
+                            "note": h.note,
+                        }
+                        for h in score_after.hits
+                    ],
+                }
+                report_dict["llm_applied"] = True
+                report_dict["llm_model"] = args.llm_model
+            return llm_result, report_dict
+
         def _process_raw(raw: str):
             # 水印预处理
             if args.watermark:
@@ -81,18 +138,30 @@ def main():
                 rewritten = rewrite_text(raw, scene=args.scene)
                 report = None
 
-            # LLM 后处理（默认关闭，显式传入 --llm 才启用）
-            use_llm = args.llm and not args.no_llm
-            if use_llm:
+            # 决定 LLM 兜底策略
+            strategy = args.strategy
+            # 向后兼容：显式 --llm 等价于 rules+llm
+            if args.llm and not args.no_llm:
+                if strategy == "rules":
+                    strategy = "rules+llm"
+            # --no-llm 始终覆盖（即使显式传了 --strategy rules+llm）
+            if args.no_llm:
+                strategy = "rules"
+
+            if strategy == "rules":
+                pass  # 仅规则，无 LLM
+            elif strategy == "rules+llm":
+                rewritten, report = _apply_llm_postprocess(rewritten, report)
+            elif strategy == "llm-only":
                 try:
-                    rewritten = llm_rewrite(
-                        rewritten,
+                    llm_result = llm_rewrite(
+                        raw,
                         base_url=args.llm_base_url,
                         model=args.llm_model,
                         scene=args.scene,
                     )
+                    rewritten = llm_result
                     if report is not None:
-                        # LLM 成功后同步更新报告，避免 rewritten / score_after 与真实输出不一致
                         report["rewritten"] = rewritten
                         report["changed"] = True
                         score_after = score_text(rewritten)
@@ -113,9 +182,22 @@ def main():
                         }
                         report["llm_applied"] = True
                         report["llm_model"] = args.llm_model
-                except (ValueError, ImportError, RuntimeError) as e:
-                    print(f"⚠️ LLM rewrite 降级: {e}", file=sys.stderr)
-                    # 不退出，继续用纯规则结果
+                except (ValueError, ImportError, RuntimeError) as exc:
+                    print(f"⚠️ LLM rewrite 降级: {exc}", file=sys.stderr)
+            elif strategy == "auto":
+                # 先规则清洗；评分仍低于阈值时调 LLM
+                pre_score = score_text(rewritten).score
+                if pre_score < args.llm_trigger_threshold:
+                    print(
+                        f"🤖 auto 触发 LLM 兜底（规则后 score={pre_score} < {args.llm_trigger_threshold}）",
+                        file=sys.stderr,
+                    )
+                    rewritten, report = _apply_llm_postprocess(rewritten, report)
+                else:
+                    print(
+                        f"✅ auto 跳过 LLM（规则后 score={pre_score} >= {args.llm_trigger_threshold}）",
+                        file=sys.stderr,
+                    )
 
             return rewritten, report
 

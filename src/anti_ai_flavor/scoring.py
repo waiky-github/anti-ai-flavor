@@ -31,6 +31,7 @@ from .core import (
     rewrite_text,
     PATTERNS_AVAILABLE,
 )
+from .professionalism import compute_professionalism
 
 try:
     from .patterns.tier1_legacy import IDIOM_FILLERS, DENSITY_FILLERS, REDUNDANT_MODIFIERS
@@ -38,6 +39,25 @@ except ImportError:
     IDIOM_FILLERS = []
     DENSITY_FILLERS = []
     REDUNDANT_MODIFIERS = []
+
+# p05/p10 后处理用：抽象词集合（必须是真实抽象套话才计入 AI 三段式）
+# 不要放"Python/Shell"这种具体技术词，否则会误报技术栈列举
+_ABSTRACT_KEYWORDS = {
+    # 中文抽象词
+    "方面", "层面", "维度", "系统", "体系", "机制", "模式", "格局",
+    "生态", "闭环", "链路", "全方位", "多维度", "多元化", "多层次",
+    "可持续", "赋能", "协同", "价值", "优势", "特色", "亮点",
+    "创新", "变革", "转型", "升级", "优化", "提升", "改进", "增强",
+    "驱动", "引领", "支撑", "展示", "反映", "推动",
+    "高效", "稳定", "可扩展", "快速", "智能", "灵活", "全面", "精准",
+    "深度", "高度", "广度", "全局", "整体", "核心", "关键",
+    "提升", "降低", "改善", "加速", "交付", "增强", "简化",
+    "全面性", "系统性", "整体性", "综合性", "智能化", "数字化",
+    # 英文抽象词
+    "holistic", "comprehensive", "systematic", "synergy", "leverage",
+    "facilitate", "enhance", "optimize", "streamline", "robust",
+    "scalable", "sustainable", "transformative", "paradigm",
+}
 
 
 @dataclass
@@ -181,12 +201,17 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
         ("p02_one_line_closer", r"总之[^。]*?[。！]"),
         ("p03_staged_runup", r"我们需要[^。]*?[。！]\s*[^。]*?[。！]\s*[^。]*?[。！]"),
         ("p04_arguing_no_one", r"应该说[^。]*?[。！]"),
-        ("p05_forced_triads", r"[^。]*?[，,][^。]*?[，,][^。]*?[。！]"),
+        # p05_forced_triads：3 个并列项，至少 1 项是抽象词
+        # 中文并列分隔符：顿号 U+3001、全角逗号 U+FF0C、半角逗号 U+002C
+        # 修复前误报严重：把 "Python、Shell、TCL" 这种技术栈列举也算成 AI 三段式
+        # 修复后：要求并列项里至少 1 个是 _ABSTRACT_KEYWORDS 里的抽象词
+        ("p05_forced_triads", r"(?:^|[。！？\n])\s*([^。\n]{2,30}?[、，,])\s*([^。\n]{2,30}?[、，,])\s*([^。\n]{2,30}?)[。！\n]"),
         ("p06_undue_caution", r"可能[^。]*?[。！]"),
         ("p07_artificial_imbalance", r"[^。]*?不仅[^。]*?而且[^。]*?[。！]"),
         ("p08_meta_commentary", r"值得注意的是[^。]*?[。！]"),
         ("p09_false_authority", r"研究表明[^。]*?[。！]"),
-        ("p10_list_fatigue", r"[^。]*?[，,][^。]*?[，,][^。]*?[，,][^。]*?[。！]"),
+        # p10_list_fatigue：4 个以上并列项，至少 2 项是抽象词
+        ("p10_list_fatigue", r"(?:^|[。！？\n])\s*([^。\n]{2,30}?[、，,])\s*([^。\n]{2,30}?[、，,])\s*([^。\n]{2,30}?[、，,])\s*([^。\n]{2,30}?)[。！\n]"),
         ("p11_rhetorical_questions", r"但这是否意味着[^。]*?[。？]"),
         ("p12_excessive_transitions", r"[^。]*?(?:此外|另外)[^。]*?[。！]"),
         ("p13_passive_overuse", r"(?:is|was|been)\s+(?:considered|believed|thought|found|discovered|shown)\s+(?:to\s+be)?[^。]*?[。.]"),
@@ -207,6 +232,18 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
 
     for pattern_id, pattern in pattern_groups:
         for m in re.finditer(pattern, text):
+            # p05/p10 后处理：要求并列项含抽象词
+            # 修复前误报：把技术栈列举也算成 AI 三段式
+            if pattern_id in ("p05_forced_triads", "p10_list_fatigue"):
+                groups = m.groups()
+                min_abstract = 1 if pattern_id == "p05_forced_triads" else 2
+                abstract_count = sum(
+                    1 for g in groups
+                    if any(w in g for w in _ABSTRACT_KEYWORDS)
+                )
+                if abstract_count < min_abstract:
+                    continue  # 不是抽象词并列，跳过
+
             hits.append(PatternHit(
                 category="pattern",
                 pattern_id=pattern_id,
@@ -246,8 +283,14 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
 
     raw_penalty = sum(h.penalty for h in all_hits)
 
-    # 归一化到 0-100（线性映射：每 1 raw penalty = -5 分）
-    score = max(0, 100 - raw_penalty * 5)
+    # 归一化到 0-100（sqrt 衰减，避免线性封顶）：
+    # - raw=0 → score=100
+    # - raw=10 → score≈68
+    # - raw=32 → score≈43（"首先段"测试用例）
+    # - raw=100 → score=0
+    # 公式：score = 100 - sqrt(raw_penalty) * 10
+    import math
+    score = max(0, int(100 - math.sqrt(max(0, raw_penalty)) * 10))
 
     # 生成摘要
     if not all_hits:
@@ -260,10 +303,14 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
         parts = [f"{k}: {v} 处" for k, v in sorted(categories.items())]
         summary = "命中 " + "；".join(parts)
 
+    # 专业度评分（2026-09-28 新增）
+    prof_result = compute_professionalism(text)
+
     details = {
         "raw_penalty": raw_penalty,
         "hit_count": len(all_hits),
         "categories": {h.category: h.matched_text for h in all_hits[:20]},
+        "professionalism": prof_result.to_dict(),
     }
 
     return ScoreResult(
