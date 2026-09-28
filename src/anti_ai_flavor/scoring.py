@@ -40,24 +40,34 @@ except ImportError:
     DENSITY_FILLERS = []
     REDUNDANT_MODIFIERS = []
 
-# p05/p10 后处理用：抽象词集合（必须是真实抽象套话才计入 AI 三段式）
-# 不要放"Python/Shell"这种具体技术词，否则会误报技术栈列举
-_ABSTRACT_KEYWORDS = {
-    # 中文抽象词
-    "方面", "层面", "维度", "系统", "体系", "机制", "模式", "格局",
-    "生态", "闭环", "链路", "全方位", "多维度", "多元化", "多层次",
-    "可持续", "赋能", "协同", "价值", "优势", "特色", "亮点",
-    "创新", "变革", "转型", "升级", "优化", "提升", "改进", "增强",
-    "驱动", "引领", "支撑", "展示", "反映", "推动",
-    "高效", "稳定", "可扩展", "快速", "智能", "灵活", "全面", "精准",
-    "深度", "高度", "广度", "全局", "整体", "核心", "关键",
-    "提升", "降低", "改善", "加速", "交付", "增强", "简化",
-    "全面性", "系统性", "整体性", "综合性", "智能化", "数字化",
-    # 英文抽象词
-    "holistic", "comprehensive", "systematic", "synergy", "leverage",
-    "facilitate", "enhance", "optimize", "streamline", "robust",
+# p05/p10 后处理用：抽象词集合拆两档（2026-09-28 A 阶段收窄误伤）
+# 强信号 = 真黑话/AI 套话，单独出现即可判定
+_STRONG_ABSTRACT_KEYWORDS = {
+    "方面", "层面", "维度", "格局",
+    "生态", "闭环", "全方位", "多维度", "多元化", "多层次",
+    "赋能", "协同", "亮点",
+    "变革", "转型",
+    "引领",
+    "全面", "深度", "高度", "广度", "全局",
+    "全面性", "系统性", "整体性", "综合性", "智能化", "数字化", "数智化",
+    "holistic", "comprehensive", "synergy", "leverage",
+    "facilitate", "streamline", "robust",
     "scalable", "sustainable", "transformative", "paradigm",
 }
+# 弱信号 = 工程师/职场正常用词，不单独作为三段式判据
+# （"优化性能、交付项目、核心模块" 在真实技术简历里是正常表达）
+_WEAK_ABSTRACT_KEYWORDS = {
+    "系统", "体系", "机制", "模式", "链路",
+    "可持续", "价值", "优势", "特色",
+    "创新", "升级", "优化", "提升", "改进", "增强",
+    "驱动", "支撑", "展示", "反映", "推动",
+    "高效", "稳定", "可扩展", "快速", "智能", "灵活", "精准",
+    "整体", "核心", "关键",
+    "降低", "改善", "加速", "交付", "简化",
+    "systematic", "enhance", "optimize",
+}
+# 兼容旧引用
+_ABSTRACT_KEYWORDS = _STRONG_ABSTRACT_KEYWORDS | _WEAK_ABSTRACT_KEYWORDS
 
 
 @dataclass
@@ -232,17 +242,27 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
 
     for pattern_id, pattern in pattern_groups:
         for m in re.finditer(pattern, text):
-            # p05/p10 后处理：要求并列项含抽象词
-            # 修复前误报：把技术栈列举也算成 AI 三段式
+            # p05/p10 后处理（2026-09-28 精细化，治误伤）：
+            # 区分点 = 整串是否「全是空洞宣称」，而非单纯含不含抽象词
+            #   - 强黑话（赋能/闭环/全方位等）≥1 → 命中（真黑话单独出现即信号）
+            #   - 无强黑话时：要求几乎全部并列项都是抽象词才命中
+            #     "高效、稳定、可扩展" 3/3 抽象 → 抓
+            #     "功能、性能、系统测试" 1/3 抽象 → 不抓（其余是具体测试类型）
             if pattern_id in ("p05_forced_triads", "p10_list_fatigue"):
                 groups = m.groups()
-                min_abstract = 1 if pattern_id == "p05_forced_triads" else 2
+                n = len(groups)
+                strong_count = sum(
+                    1 for g in groups
+                    if any(w in g for w in _STRONG_ABSTRACT_KEYWORDS)
+                )
                 abstract_count = sum(
                     1 for g in groups
                     if any(w in g for w in _ABSTRACT_KEYWORDS)
                 )
-                if abstract_count < min_abstract:
-                    continue  # 不是抽象词并列，跳过
+                # 无强黑话时，要求全部项都是抽象词（容忍至多 1 项具体）
+                caught = strong_count >= 1 or abstract_count >= n
+                if not caught:
+                    continue
 
             hits.append(PatternHit(
                 category="pattern",
@@ -283,14 +303,21 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
 
     raw_penalty = sum(h.penalty for h in all_hits)
 
+    # 密度归一化（2026-09-28 A 阶段）：按「每千字罚分」计分，与篇幅无关
+    # norm = raw_penalty * 1000 / char_count
+    # 同一段文本复制 N 次：raw ×N、char ×N，密度恒定（篇幅无关性）
+    # 不用「保底 1000 字分母」——那会让重复短文的密度被线性放大
+    char_count = max(1, len(text))
+    norm_penalty = raw_penalty * 1000.0 / char_count
+
     # 归一化到 0-100（sqrt 衰减，避免线性封顶）：
-    # - raw=0 → score=100
-    # - raw=10 → score≈68
-    # - raw=32 → score≈43（"首先段"测试用例）
-    # - raw=100 → score=0
-    # 公式：score = 100 - sqrt(raw_penalty) * 10
+    # - norm=0 → score=100
+    # - norm=10 → score≈68
+    # - norm=32 → score≈43
+    # - norm=100 → score=0
+    # 公式：score = 100 - sqrt(norm_penalty) * 10
     import math
-    score = max(0, int(100 - math.sqrt(max(0, raw_penalty)) * 10))
+    score = max(0, int(100 - math.sqrt(max(0.0, norm_penalty)) * 10))
 
     # 生成摘要
     if not all_hits:
@@ -308,7 +335,10 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
 
     details = {
         "raw_penalty": raw_penalty,
+        "norm_penalty": round(norm_penalty, 2),
         "hit_count": len(all_hits),
+        "hits_per_1k": round(len(all_hits) * 1000.0 / char_count, 2),
+        "char_count": char_count,
         "categories": {h.category: h.matched_text for h in all_hits[:20]},
         "professionalism": prof_result.to_dict(),
     }

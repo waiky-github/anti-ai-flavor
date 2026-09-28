@@ -41,15 +41,21 @@ class TestP05P10FalsePositiveFix:
         assert len(p10) >= 1, f"抽象四段式应命中 p10，实际: {len(p10)}"
 
     def test_mixed_tech_and_abstract(self):
-        """混合（技术 + 抽象词）按比例判定"""
-        # "Python、Shell、TCL、Verilog" — 0 抽象词，不算
+        """混合（技术 + 抽象词）按「整串是否全是空洞宣称」判定（2026-09-28 精细化）"""
+        # 0 抽象词：纯技术列举 → 不抓
         text1 = "Python、Shell、TCL、Verilog。"
-        # "Python、Shell、高效、Verilog" — 1 抽象词（高效），p05 需要 1 抽象词 → 命中
+        # 1 个弱抽象词混在 3 个具体技术词里 → 不抓（"高效"是正常质量词，不是黑话）
         text2 = "Python、Shell、高效、Verilog。"
+        # 1 个强黑话混在技术词里 → 抓（"赋能"单独出现即 AI 黑话信号）
+        text3 = "Python、Shell、赋能、Verilog。"
         h1 = _count_pattern_hits(text1)
         h2 = _count_pattern_hits(text2)
-        assert not any(x.pattern_id == "p05_forced_triads" for x in h1)
-        assert any(x.pattern_id == "p05_forced_triads" for x in h2)
+        h3 = _count_pattern_hits(text3)
+        assert not any(x.pattern_id == "p10_list_fatigue" for x in h1)
+        assert not any(x.pattern_id in ("p05_forced_triads", "p10_list_fatigue") for x in h2), \
+            "1 个弱抽象词混入技术列举不应命中"
+        assert any(x.pattern_id == "p10_list_fatigue" for x in h3), \
+            "强黑话混入技术列举应命中"
 
     def test_rules_clean_reduces_ai_score(self):
         """规则清洗后 v8 → v8-rules，AI 味分应明显降低"""
