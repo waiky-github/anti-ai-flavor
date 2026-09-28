@@ -17,6 +17,7 @@ import re
 from typing import Dict, List, Optional
 
 from .core import rewrite_text
+from .dedup import deduplicate_text
 
 
 # 默认 LLM 端点：minimax 国内 OpenAI 兼容（MiniMax-M3，1M 上下文，MSA 架构）
@@ -212,6 +213,8 @@ def llm_rewrite(
     max_chunk_chars: int = 1500,
     project_context: Optional[str] = None,
     project_sections: Optional[Dict[str, str]] = None,
+    dedup: bool = True,
+    dedup_similarity: float = 0.90,
 ) -> str:
     """
     使用 LLM 对文本做结构层面的人类化改写。
@@ -226,6 +229,9 @@ def llm_rewrite(
       max_chunk_chars：长文本切分阈值（默认 1500 字符），避免单段太长导致 thinking 占满 max_tokens
       project_context：自由文本项目细节（团队规模/项目周期/业务场景/解决的痛点），LLM 改写时参考补「叙事性描述」
       project_sections：按段落标题精细控制，dict[段标题, 细节]。仅改写到对应段落时使用，其他段落忽略
+      dedup：改写前是否做结构层去重/多版合并（默认 True）。剥离思维链、
+          去除重复板块，避免把同一份内容的多个版本全部改写保留
+      dedup_similarity：去重近似阈值（默认 0.90）
 
     返回：
       改写后的文本
@@ -235,6 +241,12 @@ def llm_rewrite(
       ValueError：未配置 API key
       RuntimeError：LLM 调用失败
     """
+    # 第 0 步：结构层去重 / 多版合并 / 思维链剥离（在 pattern 预清洗之前）
+    if dedup:
+        text, _dedup_stats = deduplicate_text(
+            text, similarity_threshold=dedup_similarity
+        )
+
     # 先做 pattern 预清洗，再给 LLM 做后处理，避免 LLM 重复处理规则已覆盖的套话
     pre_cleaned = rewrite_text(text, scene=scene)
 
