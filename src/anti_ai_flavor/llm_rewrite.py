@@ -17,15 +17,22 @@ from typing import Optional
 from .core import rewrite_text
 
 
+# 默认 LLM 端点：minimax 国内 OpenAI 兼容（MiniMax-M3，1M 上下文，MSA 架构）
+# 实际以 ANTI_AI_LLM_BASE_URL env 为准（minimaxi.com 是新版本域名）
+DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"
+DEFAULT_MODEL = "MiniMax-M3"
+
+
 def llm_rewrite(
     text: str,
     *,
     api_key: Optional[str] = None,
-    base_url: str = "https://open.bigmodel.cn/api/paas/v4",
-    model: str = "glm-4-flash",
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
     scene: str = "default",
     temperature: float = 0.3,
     max_tokens: int = 2000,
+    timeout: float = 60.0,
 ) -> str:
     """
     使用 LLM 对文本做结构层面的人类化改写。
@@ -33,8 +40,8 @@ def llm_rewrite(
     参数：
       text：待改写文本
       api_key：LLM API Key；默认读环境变量 ANTI_AI_LLM_API_KEY
-      base_url：LLM base URL，默认智谱
-      model：模型名，默认 glm-4-flash
+      base_url：LLM base URL；默认 ANTI_AI_LLM_BASE_URL → minimax 国内（MiniMax-M3）
+      model：模型名；默认 ANTI_AI_LLM_MODEL → MiniMax-M3
       scene：场景，透传给 rewrite_text() 先做 pattern 预清洗，再做 LLM 后处理
       temperature / max_tokens：控制改写自由度
 
@@ -54,6 +61,18 @@ def llm_rewrite(
         raise ValueError(
             "LLM rewrite 需要显式传入 api_key 或设置环境变量 ANTI_AI_LLM_API_KEY"
         )
+
+    # base_url / model 优先级：参数 > ANTI_AI_LLM_* env > minimax 默认
+    resolved_base_url: str = (
+        base_url
+        or os.environ.get("ANTI_AI_LLM_BASE_URL")
+        or DEFAULT_BASE_URL
+    )
+    resolved_model: str = (
+        model
+        or os.environ.get("ANTI_AI_LLM_MODEL")
+        or DEFAULT_MODEL
+    )
 
     try:
         from openai import OpenAI
@@ -75,11 +94,11 @@ def llm_rewrite(
         f"---\n{pre_cleaned}\n---"
     )
 
-    client = OpenAI(api_key=resolved_key, base_url=base_url)
+    client = OpenAI(api_key=resolved_key, base_url=resolved_base_url, timeout=timeout)
 
     try:
         resp = client.chat.completions.create(
-            model=model,
+            model=resolved_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=temperature,
             max_tokens=max_tokens,
@@ -91,4 +110,10 @@ def llm_rewrite(
     if not content:
         raise RuntimeError("LLM rewrite 返回空内容")
 
-    return content.strip()
+    # minimax-M3 默认开 thinking，会在 content 里混入 <think>...</think> 块
+    # 必须剥离，否则改写结果会被自己过滤规则误判
+    import re
+    content_clean = re.sub(r"<think>.*?</think>\s*", "", content, flags=re.DOTALL).strip()
+    if not content_clean:
+        raise RuntimeError("LLM rewrite 剥离 thinking 块后为空")
+    return content_clean

@@ -37,8 +37,8 @@ def main():
     rewrite_parser.add_argument("--watermark", action="store_true", help="检测并清理水印/异常字符")
     rewrite_parser.add_argument("--llm", action="store_true", default=False, help="启用 LLM 后处理改写（默认关闭，需显式传入）")
     rewrite_parser.add_argument("--no-llm", action="store_true", help="关闭 LLM 后处理（默认已关闭，此参数保留用于兼容）")
-    rewrite_parser.add_argument("--llm-model", default="glm-4-flash", help="LLM 模型（默认 glm-4-flash）")
-    rewrite_parser.add_argument("--llm-base-url", default="https://open.bigmodel.cn/api/paas/v4", help="LLM base URL")
+    rewrite_parser.add_argument("--llm-model", default=None, help="LLM 模型（默认 ANTI_AI_LLM_MODEL env → MiniMax-M3）")
+    rewrite_parser.add_argument("--llm-base-url", default=None, help="LLM base URL（默认 ANTI_AI_LLM_BASE_URL env → https://api.minimaxi.com/v1）")
     rewrite_parser.add_argument(
         "--strategy",
         choices=["rules", "rules+llm", "llm-only", "auto"],
