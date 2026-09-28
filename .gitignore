@@ -8,3 +8,6 @@ build/
 .pytest_cache/
 *.egg
 .venv/
+
+# 项目现状事实源（不进公开仓库；维护在 anti-ai-flavor-internal/）
+ops/
