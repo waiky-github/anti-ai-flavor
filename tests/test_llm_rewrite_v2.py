@@ -63,11 +63,18 @@ def test_prompt_banned_phrases_listed():
         "综上所述",
         "全方位",
         "多维度",
-        "打造", "构建", "赋能", "协同",
-        "优化", "升级", "实现", "推动", "助力",
+        "打造", "构建", "赋能", "协同", "助力",
+        "数智化", "数字化转型",
     ]
     for word in banned:
         assert word in SYSTEM_PROMPT, f"banned word missing from prompt: {word}"
+
+    # 2026-09-28 C 阶段：这些词从「绝对禁」改为「按语境判」，不应再在绝对禁词行
+    # 它们仍会出现在 prompt 的「正常用词/带数字可保留」说明里
+    for contextual in ["优化", "实现"]:
+        assert contextual in SYSTEM_PROMPT
+    # 确认 prompt 含「不要硬删」的语境判断说明
+    assert "不要硬删" in SYSTEM_PROMPT
 
 
 def test_prompt_unmodified_constraints():
