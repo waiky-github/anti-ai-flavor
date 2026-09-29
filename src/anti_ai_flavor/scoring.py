@@ -264,11 +264,19 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
                 if not caught:
                     continue
 
+            # p23 假精确（2026-09-29 改为「只标记不扣分」）：
+            # p23 docstring 原设计："纯规则无法验证，只标记"——
+            # `\d+\.\d+%` 既能命中真实上报（99.97% 可用性）也能命中 AI 编造（86.4%），
+            # 纯 regex 无法区分，扣分必然误伤真人工程指标。
+            # 改 penalty=0 保持信号可见（report/hits 仍记录）但不影响分数；
+            # AI 堆小数点百分比时由 p05/p17/p07 等 15+ pattern 兜底。
+            hit_penalty = 0 if pattern_id == "p23_false_precision" else 2
+
             hits.append(PatternHit(
                 category="pattern",
                 pattern_id=pattern_id,
                 matched_text=m.group(),
-                penalty=2,
+                penalty=hit_penalty,
                 note=f"Pattern {pattern_id}",
             ))
 
