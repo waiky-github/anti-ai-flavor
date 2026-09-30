@@ -55,8 +55,8 @@ class TestTier1ZhTechWords:
         assert len(tier1_hits) >= 2, f"期望 tier1_zh 命中 ≥2，实际={tier1_hits}"
 
     def test_tier1_zh_keyword_count_decreased(self):
-        """TIER1_ZH 词数应从 30 降到 28，验证移除成功。"""
+        """TIER1_ZH 词数应 v0.2.12=28 → v0.2.14=24（驱动/体系/支撑/模式 也已移除）。"""
         from anti_ai_flavor.core import TIER1_ZH
-        assert len(TIER1_ZH) == 28, f"TIER1_ZH 期望 28 词，实际 {len(TIER1_ZH)}"
-        assert "链路" not in TIER1_ZH
-        assert "机制" not in TIER1_ZH
+        assert len(TIER1_ZH) == 24, f"TIER1_ZH 期望 24 词，实际 {len(TIER1_ZH)}"
+        for word in ["链路", "机制", "驱动", "体系", "支撑", "模式"]:
+            assert word not in TIER1_ZH, f"{word} 不应在 TIER1_ZH"

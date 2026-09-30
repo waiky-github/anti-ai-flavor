@@ -318,14 +318,25 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
     char_count = max(1, len(text))
     norm_penalty = raw_penalty * 1000.0 / char_count
 
-    # 归一化到 0-100（sqrt 衰减，避免线性封顶）：
+    # 归一化到 0-100（sqrt 衰减 + 轻命中保护）：
     # - norm=0 → score=100
-    # - norm=10 → score≈68
+    # - norm=10 → score≈68（短文 1 个 p05 仍能反映）
     # - norm=32 → score≈43
     # - norm=100 → score=0
     # 公式：score = 100 - sqrt(norm_penalty) * 10
+    #
+    # v0.2.14 修复（2026-09-30）：raw_penalty <= 5 时 score 下限保护 85。
+    # 旧版本在短文本里 1 个小 hit（raw=2, chars=129）会触发 norm=15.5 → score=60，
+    # 即"改写几乎完美但触发 1 个 p05 三段式"会从 100 跌到 60，与人类认知严重背离。
+    # 保护逻辑：raw ≤ 5 表示「规则只是抓到几个小毛病，不算 AI 味文本」，
+    # 这种情况下 score 最低保留 85（仍能区分 AI/真人的大致档位，但不放大单点 hit）。
+    # raw > 5（≥ 6 个扣分点）说明是真正 AI 味文本，让 sqrt 全权发挥。
     import math
-    score = max(0, int(100 - math.sqrt(max(0.0, norm_penalty)) * 10))
+    base_score = max(0, int(100 - math.sqrt(max(0.0, norm_penalty)) * 10))
+    if raw_penalty <= 5:
+        score = max(85, base_score)
+    else:
+        score = base_score
 
     # 生成摘要
     if not all_hits:
