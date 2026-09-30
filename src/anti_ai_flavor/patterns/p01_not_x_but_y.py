@@ -39,15 +39,18 @@ def match(text: str) -> List[Match]:
                 end = len(text)
             
             full_match = text[start:end]
-            # 提取后半句，保留"而是"连接词
-            # 策略：删除从开始到"而是"前面的部分，保留"而是"及其后面的内容
-            # 找到"而是"的位置
+            # 保留后半句：把"而是"换成"是"，否则会得到
+            # "这玩意儿而是一个…"这种语法坏句。
+            # （2026-09-30 实测发现：旧逻辑保留"而是"字样）
             eranwei_match = re.search(r'而是', full_match)
             if eranwei_match:
                 fix_start = start + eranwei_match.start()
+                tail = text[fix_start + 2:end]  # "而是"之后的内容
+                suggested = "是" + tail
+                suggested = suggested.strip()
             else:
                 fix_start = m.end()
-            suggested = text[fix_start:end].strip()
+                suggested = text[fix_start:end].strip()
             results.append(Match(start, end, full_match, suggested))
     
     # 英文

@@ -39,19 +39,39 @@ def test_prompt_contains_split_sentence_directive():
 
 def test_prompt_contains_concrete_verb_rules():
     """新 prompt 必须给出"抽象→具体动词"的对照规则。"""
-    # 至少要有 3 组对照
+    # v0.2.13：抽象→具体动词对照改为准正式风格（建设/搭建/开发 而非"搭了/做了"）
     for verb in ["打造/构建", "赋能/支撑", "提升/优化", "全方位/多维度"]:
         assert verb in SYSTEM_PROMPT, f"missing verb rule: {verb}"
+    # v0.2.13 收紧：具体动词示例为"建设/搭建/开发"，而非"搭了/做了"
+    assert "建设/搭建/开发" in SYSTEM_PROMPT, "v0.2.13 应该用准正式动词示例"
+
+
+def test_prompt_avoids_colloquial_examples():
+    """v0.2.13 反向断言 —— few-shot 例与抽象→具体动词对照，不以口语词为正例。
+
+    反例列表（"搭了/做出来/跑起来/打通/手撕/搞定"）可以在 prompt 的"避免"
+    段落里出现作为禁止项，但不能在 few-shot 例和关键动词对照里作为正例。
+    """
+    few_shot_block = SYSTEM_PROMPT.split("【真人 vs AI 句对照】")[1].split("【这些词是工程师正常用词")[0]
+    verb_rule_block = SYSTEM_PROMPT.split("【关键原则】")[1].split("【严格不改】")[0]
+    for bad in ["搭了/做了", "做出来", "跑起来", "打通", "手撕", "搞定"]:
+        assert bad not in few_shot_block, f"v0.2.13 few-shot 含口语化正例: {bad}"
+        assert bad not in verb_rule_block, f"v0.2.13 动词对照含口语化正例: {bad}"
+
+
+def test_prompt_formal_tone_directive():
+    """v0.2.13 prompt 必须明确写"准正式技术写作"语调约束。"""
+    assert "准正式" in SYSTEM_PROMPT, "v0.2.13 应明确要求准正式语调"
 
 
 def test_prompt_few_shot_example_intact():
-    """few-shot 例必须完整（数字/技术栈原样保留），证明 LLM 有 in-context 参考。"""
-    example = (
-        "基于 4×A100 80GB，采用 vLLM 部署 Qwen3.6-27B，"
-        "配置 FP8 量化、TP=4 张量并行及模型原生 MTP 推测解码；"
-        "面向多并发推理场景完成推理引擎选型、量化调优与服务上线"
+    """v0.2.15: 「关键原则 3 补项目落地叙事」段已撤。
+    few-shot 例子从 SYSTEM_PROMPT 移除（实测发现会鼓励 LLM 扩写）。
+    改为：prompt 含「禁止补项目落地叙事」约束即可。
+    """
+    assert "禁止「补项目落地叙事」" in SYSTEM_PROMPT, (
+        "v0.2.15 应明确禁止模板化叙事扩写"
     )
-    assert example in SYSTEM_PROMPT, "few-shot example truncated or modified"
 
 
 def test_prompt_banned_phrases_listed():
@@ -195,7 +215,9 @@ def test_llm_rewrite_uses_system_role():
 
 
 def test_llm_rewrite_prompt_includes_few_shot_to_llm():
-    """few-shot 示例确实传给了 LLM（用户 prompt 里能看到例子的「前后对照」）。"""
+    """v0.2.15: SYSTEM_PROMPT 不再含 few-shot 例子（避免鼓励扩写）。
+    改为：prompt 含「长度约束」段、含「准正式」字样。
+    """
     mock_openai = _mock_openai_with_response("OK。")
     with patch.dict(os.environ, {"ANTI_AI_LLM_API_KEY": ""}, clear=False):
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -205,10 +227,13 @@ def test_llm_rewrite_prompt_includes_few_shot_to_llm():
     system_msg = next(
         m for m in call_kwargs.kwargs["messages"] if m["role"] == "system"
     )
-    # 验证完整 few-shot 例子（含 4×A100 80GB 数字不丢）
-    assert "4×A100 80GB" in system_msg["content"]
-    assert "TP=4 张量并行" in system_msg["content"]
-    assert "面向多并发推理场景" in system_msg["content"]
+    # v0.2.15: 长度约束必须在 prompt 中
+    assert "长度约束" in system_msg["content"], "v0.2.15 应含「长度约束」段"
+    assert "准正式" in system_msg["content"], "v0.2.13/15 应保留准正式语调要求"
+    # v0.2.15: 4×A100 例子已撤（few-shot 鼓励扩写）
+    assert "4×A100 80GB" not in system_msg["content"], (
+        "v0.2.15 不应在 system prompt 里再放 few-shot 数字例子"
+    )
 
 
 # ---- v0.2.11 项目细节补充 ----
