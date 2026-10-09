@@ -48,6 +48,7 @@ from .p23_false_precision import match as p23_match, fix as p23_fix
 from .p24_moralizing import match as p24_match, fix as p24_fix
 from .p25_vagueness_by_design import match as p25_match, fix as p25_fix
 from .p26_mixed_code_switching import match as p26_match, fix as p26_fix
+from .p27_over_colloquial import match as p27_match, fix as p27_fix, assess as p27_assess
 
 __all__ = [
     "TIER1_ZH", "TIER1_EN",
@@ -77,4 +78,5 @@ __all__ = [
     "p24_match", "p24_fix",
     "p25_match", "p25_fix",
     "p26_match", "p26_fix",
+    "p27_match", "p27_fix", "p27_assess",
 ]

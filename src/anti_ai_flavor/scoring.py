@@ -280,6 +280,32 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
                 note=f"Pattern {pattern_id}",
             ))
 
+    # p27 过度口语化（2026-10-09）：复用 p27 词表与豁免逻辑，硬/轻信号差别罚分
+    try:
+        from .patterns.p27_over_colloquial import assess as _p27_assess
+    except ImportError:
+        _p27_assess = None
+    if _p27_assess is not None:
+        verdict = _p27_assess(text)
+        for w in verdict["hard_hits"]:
+            hits.append(PatternHit(
+                category="pattern",
+                pattern_id="p27_over_colloquial",
+                matched_text=w,
+                penalty=3,
+                note="网络烂梗/轻佻指代（硬信号）",
+            ))
+        # 轻信号仅在达到 warn 密度后才计少量罚分（正常口语不扣）
+        if verdict["severity"] in ("warn", "rewrite"):
+            for w in verdict["light_hits"]:
+                hits.append(PatternHit(
+                    category="pattern",
+                    pattern_id="p27_over_colloquial",
+                    matched_text=w,
+                    penalty=1,
+                    note="口语化（轻信号）",
+                ))
+
     return hits
 
 

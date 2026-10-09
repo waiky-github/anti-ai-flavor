@@ -38,6 +38,7 @@ try:
     from .patterns.p24_moralizing import match as p24_match, fix as p24_fix
     from .patterns.p25_vagueness_by_design import match as p25_match, fix as p25_fix
     from .patterns.p26_mixed_code_switching import match as p26_match, fix as p26_fix
+    from .patterns.p27_over_colloquial import match as p27_match, fix as p27_fix
     PATTERNS_AVAILABLE = True
 except ImportError:
     PATTERNS_AVAILABLE = False
@@ -166,6 +167,7 @@ def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
         (p24_match, p24_fix),   # Moralizing
         (p25_match, p25_fix),   # Vagueness by design
         (p26_match, p26_fix),   # Mixed code-switching
+        (p27_match, p27_fix),   # Over-colloquial（fix 空操作，仅标记）
     ]
     
     for match_fn, fix_fn in pattern_fixes_p17_25:
