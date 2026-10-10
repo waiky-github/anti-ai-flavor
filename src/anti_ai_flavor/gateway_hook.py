@@ -207,46 +207,58 @@ async def apply_flavor_hook(
     if not text:
         return original
 
-    score = _rules_score(text)
-    if score is not None and score >= int(cfg["pass_score"]):
-        logger.info(
-            "flavor_hook: rules 分数 %d ≥ %d，放行（%d chars）",
-            score, cfg["pass_score"], len(text),
-        )
-        return text
-
-    # 文本不达标 → 短语级改写（整段黑话搭配 → 语法完整的人话，0 token）。
-    # 只替换、不裸删；无安全规则命中则原样保留。
+    # —— 关键顺序：先短语改写，再评分 ——
+    # gating 评分器与短语表是两套词表：评分器只认识「生态/闭环/全方位…」等
+    # 强信号，而「拉齐颗粒度/组合拳/品效合一」等会议黑话它不扣分（会给 100）。
+    # 若「先评分放行」，满是后者的回复会在改写前被直接放行。因此先跑短语改写
+    # （只替换命中搭配、无命中原样返回），再对产物评分。
     try:
         rules_out = phrase_rewrite(text)
     except Exception as exc:
-        logger.warning("flavor_hook: 短语改写失败，进入 LLM: %s", exc)
+        logger.warning("flavor_hook: 短语改写失败，按原文继续: %s", exc)
         rules_out = text
     rules_out = rules_out.strip() if rules_out else ""
 
-    if rules_out and rules_out != text:
-        # 短语改写不能破坏 URL/版本/数字；被破坏则不采用，直接走 LLM。
-        if not protected_tokens_preserved(text, rules_out):
-            logger.info("flavor_hook: 短语改写破坏了关键内容，进入 LLM")
-            rules_out = text
-        else:
-            rules_out_score = _rules_score(rules_out)
-            if rules_out_score is not None and rules_out_score >= int(cfg["pass_score"]):
-                logger.info(
-                    "flavor_hook: 短语改写后分数 %d ≥ %d，采用（%d → %d chars）",
-                    rules_out_score, cfg["pass_score"], len(text), len(rules_out),
-                )
-                return normalize_punctuation(rules_out)
-            logger.info(
-                "flavor_hook: 短语改写后仍 %s < %d，进入 LLM（%d → %d chars）",
-                rules_out_score, cfg["pass_score"], len(text), len(rules_out),
-            )
-    else:
-        logger.info("flavor_hook: 短语改写无命中，进入 LLM")
+    # 无命中 / 命中后破坏了受保护内容 → 回退原文，只按评分器判定。
+    if not rules_out or rules_out == text:
+        rules_out = ""
+    elif not protected_tokens_preserved(text, rules_out):
+        logger.info("flavor_hook: 短语改写破坏了关键内容，忽略改写")
+        rules_out = ""
 
-    # 短语改写后仍不达标（或无命中）→ LLM 改写。喂给 LLM 的是短语改写产物，
-    # 让它在已清洗的基础上重构；无命中则用规范化文本。
-    llm_input = rules_out or text
+    # 需要评分的文本：有有效改写则评产物，否则评规范化原文。
+    candidate = rules_out or text
+    score = _rules_score(candidate)
+    if score is not None and score >= int(cfg["pass_score"]):
+        if rules_out:
+            logger.info(
+                "flavor_hook: 短语改写后分数 %d ≥ %d，采用（%d → %d chars）",
+                score, cfg["pass_score"], len(text), len(rules_out),
+            )
+        else:
+            logger.info(
+                "flavor_hook: rules 分数 %d ≥ %d，放行（%d chars）",
+                score, cfg["pass_score"], len(text),
+            )
+        return normalize_punctuation(candidate)
+
+    # 短语改写无命中（或被忽略）且评分器也不认识 → 干净但低分的文本直接放行，
+    # 不必为评分器盲区浪费一次 LLM；只有确实存在可识别 AI 味时才继续。
+    if not rules_out and (score is None):
+        return text
+
+    if rules_out:
+        logger.info(
+            "flavor_hook: 短语改写后仍 %s < %d，进入 LLM（%d → %d chars）",
+            score, cfg["pass_score"], len(text), len(rules_out),
+        )
+    else:
+        logger.info(
+            "flavor_hook: rules 分数 %s < %d，进入 LLM", score, cfg["pass_score"],
+        )
+
+    # 短语改写后仍不达标（或无命中）→ LLM 改写。喂给 LLM 的是候选文本。
+    llm_input = candidate
     api_key = _resolve_api_key()
     if not api_key:
         logger.warning(
