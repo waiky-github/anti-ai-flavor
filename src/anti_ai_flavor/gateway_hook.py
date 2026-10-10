@@ -22,6 +22,7 @@ Flavor hook — gateway 回复发出前自动检测并清洗「AI 味儿」。
 
 import asyncio
 import logging
+import os
 import re
 from typing import Any, Dict, Optional
 
@@ -40,6 +41,7 @@ _DEFAULTS: Dict[str, Any] = {
     "pass_score": 85,
     "llm_timeout": 90,
     "llm_max_chunk_chars": 1500,
+    "min_keep_chars": 80,
 }
 
 
@@ -117,11 +119,58 @@ def _rules_rewrite(text: str) -> Optional[str]:
         return None
 
 
-def _llm_rewrite_sync(text: str, max_chunk_chars: int) -> str:
+def _valid_key(v: Optional[str]) -> bool:
+    """判断 key 是否为可用真值：非空、不是未展开的 ${VAR} 字面量。"""
+    return bool(v) and "${" not in v and not v.startswith("$")
+
+
+def _read_env_file_key(var_name: str) -> Optional[str]:
+    """从当前 profile 的 .env（其次 Hermes 根 .env）读取变量真值。
+
+    systemd override 里的 ${VAR} 在 manager 未定义该变量时会原样进入进程
+    环境（不展开），导致 llm_rewrite 拿到字面假值。这里直接回 .env 文件
+    取主 provider 使用的同一把 key。只读、不打印明文。
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        candidates = [
+            get_hermes_home() / ".env",
+            get_hermes_home().parent / ".env",
+        ]
+    except Exception:
+        candidates = []
+    for path in candidates:
+        try:
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, val = line.partition("=")
+                if k.strip() == var_name:
+                    val = val.strip().strip('"').strip("'")
+                    if _valid_key(val):
+                        return val
+        except Exception as exc:
+            logger.debug("flavor_hook: 读取 %s 失败: %s", path, exc)
+    return None
+
+
+def _resolve_api_key() -> Optional[str]:
+    """解析 LLM key：环境变量有效 → 直接用；否则回 profile .env 读真值。"""
+    env_val = os.environ.get("ANTI_AI_LLM_API_KEY")
+    if _valid_key(env_val):
+        return env_val
+    return _read_env_file_key("MINIMAX_CN_API_KEY")
+
+
+def _llm_rewrite_sync(text: str, max_chunk_chars: int, api_key: str) -> str:
     """在线程中执行的 LLM 改写。异常向上抛，由调用方兜底。"""
     from anti_ai_flavor.llm_rewrite import llm_rewrite
     return llm_rewrite(
         text,
+        api_key=api_key,
         max_chunk_chars=max_chunk_chars,
     )
 
@@ -171,12 +220,19 @@ async def apply_flavor_hook(
     # rules 改写后仍不达标（或评分器不可用）→ LLM 改写。喂给 LLM 的是 rules 产物，
     # 让它在已清洗的基础上重构；rules 失败则用原文。
     llm_input = rules_out or original
+    api_key = _resolve_api_key()
+    if not api_key:
+        logger.warning(
+            "flavor_hook: 未解析到可用 LLM key（env/.env 均无效），发原文",
+        )
+        return original
     try:
         rewritten = await asyncio.wait_for(
             asyncio.to_thread(
                 _llm_rewrite_sync,
                 llm_input,
                 int(cfg["llm_max_chunk_chars"]),
+                api_key,
             ),
             timeout=float(cfg["llm_timeout"]),
         )
@@ -190,16 +246,36 @@ async def apply_flavor_hook(
         return original
 
     rewritten = (rewritten or "").strip()
-    # 改写结果为空或长度异常缩水（不到原文一半）→ 不信任，发原文
-    if not rewritten or len(rewritten) < len(original) * 0.5:
+    if not rewritten:
+        logger.warning("flavor_hook: 改写结果为空，发原文")
+        return original
+
+    # 判定改写结果是否可信。不能用“必须保留原文一半长度”的固定比例：
+    # 输入若全是空话，LLM 大幅压缩是正确行为。改为：
+    #   1) 结果再评分达标 → 直接采用（长度无关）
+    #   2) 结果极短（< min_keep_chars 或不到原文 30%）→ 疑似截断，发原文
+    #   3) 长度合理 → 采用，避免因评分器保守而拒绝有效改写
+    new_score = _rules_score(rewritten)
+    if new_score is not None and new_score >= int(cfg["pass_score"]):
+        logger.info(
+            "flavor_hook: LLM 改写后分数 %d ≥ %d，采用（%d → %d chars）",
+            new_score, cfg["pass_score"], len(original), len(rewritten),
+        )
+        return rewritten
+
+    too_short = (
+        len(rewritten) < int(cfg["min_keep_chars"])
+        or len(rewritten) < len(original) * 0.3
+    )
+    if too_short:
         logger.warning(
-            "flavor_hook: 改写结果异常（%d → %d chars），发原文",
-            len(original), len(rewritten),
+            "flavor_hook: 改写结果异常过短（%d → %d chars，score=%s），发原文",
+            len(original), len(rewritten), new_score,
         )
         return original
 
     logger.info(
-        "flavor_hook: 已 LLM 改写（原文 rules=%s, %d → %d chars）",
-        score, len(original), len(rewritten),
+        "flavor_hook: 已 LLM 改写（原文 rules=%s → 新 rules=%s，%d → %d chars）",
+        score, new_score, len(original), len(rewritten),
     )
     return rewritten
