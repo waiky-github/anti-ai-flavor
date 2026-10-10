@@ -255,6 +255,16 @@ def test_llm_preserves_token_adopts_rewrite(monkeypatch):
     assert "赋能" not in out
 
 
+def test_no_auto_space_between_cjk_and_alnum():
+    # 用户拍板：中英文/数字之间不自动加空格（2026-10-10）
+    from anti_ai_flavor.core import rewrite_text
+    s = "用Python开发共3个模块，调用API耗时30秒，" * 6
+    out = rewrite_text(s)
+    assert "用 Python" not in out
+    assert "共 3" not in out
+    assert "用Python" in out
+
+
 # ---------- key 解析 ----------
 
 def test_valid_key_helper():

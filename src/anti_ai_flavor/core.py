@@ -462,10 +462,8 @@ def _merge_sentences(text: str) -> str:
 
 def _final_cleanup(text: str) -> str:
     """最终清理"""
-    # 中英文之间加空格（如果缺失）
-    text = re.sub(r'([\u4e00-\u9fff])([a-zA-Z])', r'\1 \2', text)
-    text = re.sub(r'([a-zA-Z])([\u4e00-\u9fff])', r'\1 \2', text)
-    
+    # 中英文之间不自动加空格（用户拍板：纯中文排版不夹空格，2026-10-10）
+
     # 清理连续句号（不插入空格，不删结尾句号）
     text = re.sub(r'[。]{2,}', '。', text)
     text = re.sub(r'[.]{2,}', '.', text)
@@ -611,10 +609,8 @@ def _legacy_rewrite(text: str, scene: str = "default") -> str:
     # 最终清理
     result = re.sub(r"。([^。\n])", "。\1", result)
     
-    # 中英文之间加空格（如果缺失）
-    result = re.sub(r'([\u4e00-\u9fff])([a-zA-Z])', r'\1 \2', result)
-    result = re.sub(r'([a-zA-Z])([\u4e00-\u9fff])', r'\1 \2', result)
-    
+    # 中英文之间不自动加空格（用户拍板：纯中文排版不夹空格，2026-10-10）
+
     # 清理句号残留。加守卫：点两侧是 ASCII 字母/数字时（小数 3.14、版本
     # v1.2.3、域名）不动，只处理真正的句尾/孤立句号。
     result = re.sub(
@@ -785,10 +781,8 @@ def rewrite_text(text: str, scene: str = "default", *, whitelist_strict: bool = 
     # 15. 最终清理
     result = re.sub(r"。([^。\n])", "。\1", result)
     
-    # 15.5 Phase 2 新增：中英文之间加空格（如果缺失）
-    result = re.sub(r'([\u4e00-\u9fff])([a-zA-Z])', r'\1 \2', result)
-    result = re.sub(r'([a-zA-Z])([\u4e00-\u9fff])', r'\1 \2', result)
-    
+    # 中英文之间不自动加空格（用户拍板：纯中文排版不夹空格，2026-10-10）
+
     # 15.6 Phase 2 新增：清理句号残留
     #    删除孤立的句号（前后都没有有效内容）。守卫：点两侧是 ASCII 字母/
     #    数字时（小数/版本/域名）不动。
