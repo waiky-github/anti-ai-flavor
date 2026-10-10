@@ -198,6 +198,33 @@ def _count_legacy_hits(text: str) -> List[PatternHit]:
     return hits
 
 
+def _count_lexicon_residual_hits(text: str) -> List[PatternHit]:
+    """统一词源残留检测：文本中仍出现词源核心黑话 → 未洗净，扣分。
+
+    与旧 ``TIER1_ZH``（赋能/闭环/生态…）重叠的词沿用旧 tier1 罚分，不重复扣；
+    这里只补旧评分表不认识、由统一词源新增的黑话名词（底层逻辑/组合拳/品效合一/
+    颗粒度/痛点/壁垒/反哺…），从而「短语表漏改」时评分器能兜住、交 LLM 处理。
+    """
+    try:
+        from .lexicon import residual_keywords
+    except Exception:
+        return []
+    already = set(TIER1_ZH)
+    hits: List[PatternHit] = []
+    for word in residual_keywords():
+        # 跳过已被 tier1 覆盖的词，避免同一黑话双重扣分
+        if word in already:
+            continue
+        if word in text:
+            hits.append(PatternHit(
+                category="lexicon_residual",
+                matched_text=word,
+                penalty=4,
+                note=f"未洗净的黑话名词「{word}」",
+            ))
+    return hits
+
+
 def _count_pattern_hits(text: str) -> List[PatternHit]:
     """统计 25-pattern 体系的命中情况（只做轻量级正则统计，不执行 fix）。"""
     if not PATTERNS_AVAILABLE:
@@ -327,12 +354,14 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
             "idiom_fillers": 3,
             "density_fillers": 3,
             "redundant_modifiers": 2,
+            "lexicon_residual": 4,
             "pattern": 2,
         }
 
     all_hits: List[PatternHit] = []
     all_hits.extend(_count_tier1_hits(text))
     all_hits.extend(_count_legacy_hits(text))
+    all_hits.extend(_count_lexicon_residual_hits(text))
     all_hits.extend(_count_pattern_hits(text))
 
     raw_penalty = sum(h.penalty for h in all_hits)

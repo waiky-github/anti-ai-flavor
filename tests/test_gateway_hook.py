@@ -303,3 +303,57 @@ def test_resolve_api_key_all_invalid_returns_none(monkeypatch):
     monkeypatch.setenv("ANTI_AI_LLM_API_KEY", "${MINIMAX_CN_API_KEY}")
     monkeypatch.setattr(flavor_hook, "_read_env_file_key", lambda name: None)
     assert flavor_hook._resolve_api_key() is None
+
+
+# —— LLM 空返回重试 ——
+
+def test_llm_empty_thinking_retries_then_succeeds(monkeypatch):
+    """前两次只输出 thinking（空），第三次成功 → 返回成功结果，共调用 3 次。"""
+    import importlib
+    lr = importlib.import_module("anti_ai_flavor.llm_rewrite")
+    calls = {"n": 0}
+
+    def _fake_rewrite(text, *, api_key, max_chunk_chars):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("LLM rewrite 剥离 thinking 块后为空")
+        return "改写成功的干净正文内容"
+
+    monkeypatch.setattr(lr, "llm_rewrite", _fake_rewrite)
+    out = flavor_hook._llm_rewrite_sync("黑话原文", 1500, "key")
+    assert out == "改写成功的干净正文内容"
+    assert calls["n"] == 3
+
+
+def test_llm_empty_thinking_all_fail_raises(monkeypatch):
+    """连续 3 次都只输出 thinking → 重试耗尽，抛出原错误。"""
+    import importlib
+    import pytest
+    lr = importlib.import_module("anti_ai_flavor.llm_rewrite")
+    calls = {"n": 0}
+
+    def _fake_rewrite(text, *, api_key, max_chunk_chars):
+        calls["n"] += 1
+        raise RuntimeError("LLM rewrite 剥离 thinking 块后为空")
+
+    monkeypatch.setattr(lr, "llm_rewrite", _fake_rewrite)
+    with pytest.raises(RuntimeError, match="剥离 thinking 块后为空"):
+        flavor_hook._llm_rewrite_sync("黑话原文", 1500, "key")
+    assert calls["n"] == 3
+
+
+def test_llm_other_runtime_error_not_retried(monkeypatch):
+    """非「空 thinking」的 RuntimeError 立即上抛，不重试。"""
+    import importlib
+    import pytest
+    lr = importlib.import_module("anti_ai_flavor.llm_rewrite")
+    calls = {"n": 0}
+
+    def _fake_rewrite(text, *, api_key, max_chunk_chars):
+        calls["n"] += 1
+        raise RuntimeError("鉴权失败 401")
+
+    monkeypatch.setattr(lr, "llm_rewrite", _fake_rewrite)
+    with pytest.raises(RuntimeError, match="鉴权失败 401"):
+        flavor_hook._llm_rewrite_sync("黑话原文", 1500, "key")
+    assert calls["n"] == 1

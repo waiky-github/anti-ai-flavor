@@ -171,14 +171,37 @@ def _resolve_api_key() -> Optional[str]:
     return _read_env_file_key("MINIMAX_CN_API_KEY")
 
 
-def _llm_rewrite_sync(text: str, max_chunk_chars: int, api_key: str) -> str:
-    """在线程中执行的 LLM 改写。异常向上抛，由调用方兜底。"""
+def _llm_rewrite_sync(
+    text: str,
+    max_chunk_chars: int,
+    api_key: str,
+    max_attempts: int = 3,
+) -> str:
+    """在线程中执行的 LLM 改写。异常向上抛，由调用方兜底。
+
+    模型偶发只输出 thinking、不产出正文（``剥离 thinking 块后为空``），属瞬时
+    失败——此处对该特定错误自动重试至多 ``max_attempts`` 次，提升成功率；其他
+    异常（鉴权/网络/超时等）不重试，立即上抛。
+    """
     from anti_ai_flavor.llm_rewrite import llm_rewrite
-    return llm_rewrite(
-        text,
-        api_key=api_key,
-        max_chunk_chars=max_chunk_chars,
-    )
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return llm_rewrite(
+                text,
+                api_key=api_key,
+                max_chunk_chars=max_chunk_chars,
+            )
+        except RuntimeError as exc:
+            if "剥离 thinking 块后为空" not in str(exc):
+                raise
+            last_exc = exc
+            logger.info(
+                "flavor_hook: LLM 第 %d/%d 次只输出 thinking 未给正文，重试",
+                attempt, max_attempts,
+            )
+    assert last_exc is not None
+    raise last_exc
 
 
 async def apply_flavor_hook(
