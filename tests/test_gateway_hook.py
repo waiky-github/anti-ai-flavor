@@ -216,6 +216,45 @@ def test_no_resolved_key_returns_original(monkeypatch):
     assert called["llm"] is False
 
 
+# ---------- 受保护内容校验 ----------
+
+def test_llm_corrupts_version_returns_original(monkeypatch):
+    # 原文含版本号 v1.2.3；LLM 把它读成 v14 → 校验失败，回退规范化原文
+    _force_key(monkeypatch)
+    base = "我们需要升级核心模块，版本号 v1.2.3 必须保留，请全方位赋能业务闭环。" * 12
+    assert len(base) >= 200
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 30)
+    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+    # LLM 返回里版本号被破坏
+    monkeypatch.setattr(
+        flavor_hook, "_llm_rewrite_sync",
+        lambda t, c, key: "我们需要升级模块，版本号 v14 请保留。" * 12,
+    )
+    out = _run(flavor_hook.apply_flavor_hook(base, _cfg()))
+    # 回退的是规范化原文（v1.2.3 完好）
+    assert "v1.2.3" in out
+    assert "v14" not in out
+
+
+def test_llm_preserves_token_adopts_rewrite(monkeypatch):
+    # LLM 改写后版本号逐字保留、内容达标 → 采用
+    _force_key(monkeypatch)
+    base = "我们需要升级核心模块，版本号 v1.2.3 必须保留，请全方位赋能业务闭环。" * 12
+    assert len(base) >= 200
+    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+
+    def _score(t):
+        # 原文低分，改写产物高分
+        return 30 if "赋能" in t else 90
+
+    monkeypatch.setattr(flavor_hook, "_rules_score", _score)
+    clean = "升级核心模块时，版本号 v1.2.3 保持不变，直接沿用即可。" * 12
+    monkeypatch.setattr(flavor_hook, "_llm_rewrite_sync", lambda t, c, key: clean)
+    out = _run(flavor_hook.apply_flavor_hook(base, _cfg()))
+    assert "v1.2.3" in out
+    assert "赋能" not in out
+
+
 # ---------- key 解析 ----------
 
 def test_valid_key_helper():

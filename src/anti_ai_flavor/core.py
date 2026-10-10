@@ -380,8 +380,21 @@ def _cleanup_residue(text: str) -> str:
 
 def _merge_sentences(text: str) -> str:
     """合并句子，确保句子间有空格"""
-    # 按句号/问号/感叹号分句（中英文）
-    sentences = re.split(r'(?<=[。！？.!?\n])', text)
+    # 按句号/问号/感叹号分句（中英文）。守卫：半角句点两侧是 ASCII 字母/
+    # 数字时（小数 3.14、版本 v1.2.3）不切分。分两步——全角标点直接切；
+    # 半角句点仅在前一个字符不是字母/数字时切。
+    text = re.sub(r'(?<=[。！？!?])', '\x00', text)
+    # 半角句点：版本号/小数的点两侧「直接紧贴」字母数字且无空格（v1.2 /
+    # 3.14）；英文句尾点后有空格（. Word）。先把紧贴的非句尾点换成占位符
+    # \x01 保护起来，再把剩余点当句尾标记，最后还原占位符。
+    text = re.sub(
+        r'(?:(?<=[A-Za-z0-9])[.](?! )|(?<![ ])[.](?=[A-Za-z0-9]))',
+        '\x01', text
+    )
+    text = re.sub(r'[.]', '.\x00', text)
+    text = text.replace('\x01', '.')
+    text = re.sub(r'(?<=\n)', '\x00', text)
+    sentences = text.split('\x00')
     rewritten = []
     for sent in sentences:
         sent = sent.strip()
@@ -602,8 +615,11 @@ def _legacy_rewrite(text: str, scene: str = "default") -> str:
     result = re.sub(r'([\u4e00-\u9fff])([a-zA-Z])', r'\1 \2', result)
     result = re.sub(r'([a-zA-Z])([\u4e00-\u9fff])', r'\1 \2', result)
     
-    # 清理句号残留
-    result = re.sub(r'[\s]*[.。][\s]*', '. ', result)
+    # 清理句号残留。加守卫：点两侧是 ASCII 字母/数字时（小数 3.14、版本
+    # v1.2.3、域名）不动，只处理真正的句尾/孤立句号。
+    result = re.sub(
+        r'(?<![A-Za-z0-9])[\s]*[.。][\s]*(?![A-Za-z0-9])', '. ', result
+    )
     result = re.sub(r'\.\s*\.', '.', result)  # 删除连续句号
     result = re.sub(r'^[.。\s]+', '', result)  # 删除开头的句号
     result = re.sub(r'[.。\s]+$', '', result)  # 删除结尾的句号
@@ -774,8 +790,11 @@ def rewrite_text(text: str, scene: str = "default", *, whitelist_strict: bool = 
     result = re.sub(r'([a-zA-Z])([\u4e00-\u9fff])', r'\1 \2', result)
     
     # 15.6 Phase 2 新增：清理句号残留
-    #    删除孤立的句号（前后都没有有效内容）
-    result = re.sub(r'[\s]*[.。][\s]*', '. ', result)
+    #    删除孤立的句号（前后都没有有效内容）。守卫：点两侧是 ASCII 字母/
+    #    数字时（小数/版本/域名）不动。
+    result = re.sub(
+        r'(?<![A-Za-z0-9])[\s]*[.。][\s]*(?![A-Za-z0-9])', '. ', result
+    )
     result = re.sub(r'\.\s*\.', '.', result)  # 删除连续句号
     result = re.sub(r'^[.。\s]+', '', result)  # 删除开头的句号
     result = re.sub(r'[.。\s]+$', '', result)  # 删除结尾的句号

@@ -26,6 +26,11 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from anti_ai_flavor.punctuation import (
+    normalize_punctuation,
+    protected_tokens_preserved,
+)
+
 logger = logging.getLogger(__name__)
 
 # 含这些内容的回复不处理（媒体/附件/内部指令），交给平台原有的媒体投递逻辑
@@ -191,41 +196,51 @@ async def apply_flavor_hook(
     if not _is_eligible(original, int(cfg["min_chars"])):
         return original
 
-    score = _rules_score(original)
+    # 标点规范化（纯规则、0 token、幂等）。在评分/改写前先做，后续链路都基于
+    # 规范化文本；任何异常都回退原文，不影响回复。
+    try:
+        text = normalize_punctuation(original)
+    except Exception as exc:
+        logger.warning("flavor_hook: 标点规范化失败，继续原文: %s", exc)
+        text = original
+    if not text:
+        return original
+
+    score = _rules_score(text)
     if score is not None and score >= int(cfg["pass_score"]):
         logger.info(
             "flavor_hook: rules 分数 %d ≥ %d，放行（%d chars）",
-            score, cfg["pass_score"], len(original),
+            score, cfg["pass_score"], len(text),
         )
-        return original
+        return text
 
-    # 原文不达标 → 先跑纯 rules 改写，改写后再评分，达标即发（0 token）
-    rules_out = _rules_rewrite(original)
+    # 文本不达标 → 先跑纯 rules 改写，改写后再评分，达标即发（0 token）
+    rules_out = _rules_rewrite(text)
     rules_out = rules_out.strip() if rules_out else ""
-    if rules_out and rules_out != original:
+    if rules_out and rules_out != text:
         rules_out_score = _rules_score(rules_out)
         if rules_out_score is not None and rules_out_score >= int(cfg["pass_score"]):
             logger.info(
                 "flavor_hook: rules 改写后分数 %d ≥ %d，采用（%d → %d chars）",
-                rules_out_score, cfg["pass_score"], len(original), len(rules_out),
+                rules_out_score, cfg["pass_score"], len(text), len(rules_out),
             )
-            return rules_out
+            return normalize_punctuation(rules_out)
         logger.info(
             "flavor_hook: rules 改写后仍 %s < %d，进入 LLM（%d → %d chars）",
-            rules_out_score, cfg["pass_score"], len(original), len(rules_out),
+            rules_out_score, cfg["pass_score"], len(text), len(rules_out),
         )
     else:
         logger.info("flavor_hook: rules 改写无实质变化，进入 LLM")
 
     # rules 改写后仍不达标（或评分器不可用）→ LLM 改写。喂给 LLM 的是 rules 产物，
-    # 让它在已清洗的基础上重构；rules 失败则用原文。
-    llm_input = rules_out or original
+    # 让它在已清洗的基础上重构；rules 失败则用规范化文本。
+    llm_input = rules_out or text
     api_key = _resolve_api_key()
     if not api_key:
         logger.warning(
             "flavor_hook: 未解析到可用 LLM key（env/.env 均无效），发原文",
         )
-        return original
+        return text
     try:
         rewritten = await asyncio.wait_for(
             asyncio.to_thread(
@@ -240,15 +255,24 @@ async def apply_flavor_hook(
         logger.warning(
             "flavor_hook: LLM 改写超时（%ss），发原文", cfg["llm_timeout"],
         )
-        return original
+        return text
     except Exception as exc:
         logger.warning("flavor_hook: LLM 改写失败，发原文: %s", exc)
-        return original
+        return text
 
     rewritten = (rewritten or "").strip()
     if not rewritten:
         logger.warning("flavor_hook: 改写结果为空，发原文")
-        return original
+        return text
+
+    # 受保护内容校验：原文中的 URL/邮箱/版本号/千分位/时间必须逐字保留。
+    # LLM 自由发挥可能把 v1.2.3 读成 v14、给 URL 插空格——一旦关键 token 被
+    # 破坏或丢失，这次改写不可信，回退规范化原文。
+    if not protected_tokens_preserved(llm_input, rewritten):
+        logger.warning(
+            "flavor_hook: LLM 改写破坏了关键内容（URL/版本/数字），发原文",
+        )
+        return text
 
     # 判定改写结果是否可信。不能用“必须保留原文一半长度”的固定比例：
     # 输入若全是空话，LLM 大幅压缩是正确行为。改为：
@@ -259,23 +283,23 @@ async def apply_flavor_hook(
     if new_score is not None and new_score >= int(cfg["pass_score"]):
         logger.info(
             "flavor_hook: LLM 改写后分数 %d ≥ %d，采用（%d → %d chars）",
-            new_score, cfg["pass_score"], len(original), len(rewritten),
+            new_score, cfg["pass_score"], len(text), len(rewritten),
         )
-        return rewritten
+        return normalize_punctuation(rewritten)
 
     too_short = (
         len(rewritten) < int(cfg["min_keep_chars"])
-        or len(rewritten) < len(original) * 0.3
+        or len(rewritten) < len(text) * 0.3
     )
     if too_short:
         logger.warning(
             "flavor_hook: 改写结果异常过短（%d → %d chars，score=%s），发原文",
-            len(original), len(rewritten), new_score,
+            len(text), len(rewritten), new_score,
         )
-        return original
+        return text
 
     logger.info(
         "flavor_hook: 已 LLM 改写（原文 rules=%s → 新 rules=%s，%d → %d chars）",
-        score, new_score, len(original), len(rewritten),
+        score, new_score, len(text), len(rewritten),
     )
-    return rewritten
+    return normalize_punctuation(rewritten)
