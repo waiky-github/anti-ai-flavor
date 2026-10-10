@@ -4,8 +4,9 @@ Flavor hook — gateway 回复发出前自动检测并清洗「AI 味儿」。
 在普通消息路径（非 slash 命令、非 streaming）handler 返回文本后调用：
   1. 只处理纯中文文本（无 MEDIA:/图片/附件标记），长度达阈值；
   2. rules-only score_text 毫秒检测，分数达标直接放行，不烧 token；
-  3. 不达标 → 线程池跑 llm_rewrite（MiniMax-M3 默认），带超时；
-  4. 任何异常 / 超时 / 改写结果异常 → 原样返回，绝不能因为本 hook 吞掉回复。
+  3. 不达标 → 先跑纯 rules rewrite_text，改写后再评分，达标即发（0 token）；
+  4. rules 改写后仍不达标（或没实质变化）→ 线程池跑 llm_rewrite（MiniMax-M3 默认），带超时；
+  5. 任何异常 / 超时 / 改写结果异常 → 原样返回，绝不能因为本 hook 吞掉回复。
 
 配置（gateway config，均有默认值）：
     gateway:
@@ -106,6 +107,16 @@ def _rules_score(text: str) -> Optional[int]:
         return None
 
 
+def _rules_rewrite(text: str) -> Optional[str]:
+    """纯 rules 改写（0 token）。导入失败/异常返回 None。"""
+    try:
+        from anti_ai_flavor.core import rewrite_text
+        return rewrite_text(text)
+    except Exception as exc:
+        logger.warning("flavor_hook: rules 改写失败: %s", exc)
+        return None
+
+
 def _llm_rewrite_sync(text: str, max_chunk_chars: int) -> str:
     """在线程中执行的 LLM 改写。异常向上抛，由调用方兜底。"""
     from anti_ai_flavor.llm_rewrite import llm_rewrite
@@ -139,12 +150,32 @@ async def apply_flavor_hook(
         )
         return original
 
-    # 分数不达标（或评分器不可用时按不达标处理）→ LLM 改写
+    # 原文不达标 → 先跑纯 rules 改写，改写后再评分，达标即发（0 token）
+    rules_out = _rules_rewrite(original)
+    rules_out = rules_out.strip() if rules_out else ""
+    if rules_out and rules_out != original:
+        rules_out_score = _rules_score(rules_out)
+        if rules_out_score is not None and rules_out_score >= int(cfg["pass_score"]):
+            logger.info(
+                "flavor_hook: rules 改写后分数 %d ≥ %d，采用（%d → %d chars）",
+                rules_out_score, cfg["pass_score"], len(original), len(rules_out),
+            )
+            return rules_out
+        logger.info(
+            "flavor_hook: rules 改写后仍 %s < %d，进入 LLM（%d → %d chars）",
+            rules_out_score, cfg["pass_score"], len(original), len(rules_out),
+        )
+    else:
+        logger.info("flavor_hook: rules 改写无实质变化，进入 LLM")
+
+    # rules 改写后仍不达标（或评分器不可用）→ LLM 改写。喂给 LLM 的是 rules 产物，
+    # 让它在已清洗的基础上重构；rules 失败则用原文。
+    llm_input = rules_out or original
     try:
         rewritten = await asyncio.wait_for(
             asyncio.to_thread(
                 _llm_rewrite_sync,
-                original,
+                llm_input,
                 int(cfg["llm_max_chunk_chars"]),
             ),
             timeout=float(cfg["llm_timeout"]),
@@ -168,7 +199,7 @@ async def apply_flavor_hook(
         return original
 
     logger.info(
-        "flavor_hook: 已改写（rules=%s, %d → %d chars）",
+        "flavor_hook: 已 LLM 改写（原文 rules=%s, %d → %d chars）",
         score, len(original), len(rewritten),
     )
     return rewritten
