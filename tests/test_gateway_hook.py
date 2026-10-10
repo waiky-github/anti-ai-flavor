@@ -73,12 +73,18 @@ def test_rules_pass_skips_everything(monkeypatch):
     assert called == {"rules": False, "llm": False}
 
 
-def test_rules_rewrite_pass_skips_llm(monkeypatch):
-    # 原文低分；rules 改写产物高分 → 采用 rules 产物，不调 LLM
-    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: RULES_CLEAN)
+def test_phrase_rewrite_pass_skips_llm(monkeypatch):
+    # 原文低分；短语改写产物高分 → 采用产物，不调 LLM
+    from anti_ai_flavor.phrase_rewrite import phrase_rewrite as real_pr
+    clean = "系统本周稳定，无告警，监控正常，值班无需跟进。" * 6
+
+    def fake_phrase(t):
+        return clean if t != clean else t
+
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", fake_phrase)
 
     def _score(t):
-        return 40 if t == AI_FLAVOR else 95
+        return 40 if t != clean else 95
 
     monkeypatch.setattr(flavor_hook, "_rules_score", _score)
     called = {"llm": False}
@@ -89,17 +95,17 @@ def test_rules_rewrite_pass_skips_llm(monkeypatch):
 
     monkeypatch.setattr(flavor_hook, "_llm_rewrite_sync", _boom)
     out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
-    assert out == RULES_CLEAN
+    assert out == clean
     assert called["llm"] is False
 
 
 # ---------- 进入 LLM 的各路径 ----------
 
-def test_rules_rewrite_no_change_then_llm(monkeypatch):
-    # rules 改写无实质变化（返回原文）→ LLM，喂原文，key 被传入
+def test_phrase_no_change_then_llm(monkeypatch):
+    # 短语改写无命中（返回原文）→ LLM，喂原文，key 被传入
     _force_key(monkeypatch)
     monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 40)
-    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", lambda t: t)
 
     seen = {}
 
@@ -115,10 +121,11 @@ def test_rules_rewrite_no_change_then_llm(monkeypatch):
     assert seen["key"] == "test-secret-key"
 
 
-def test_rules_rewrite_still_low_feeds_rules_output_to_llm(monkeypatch):
-    # rules 有产物但仍低分 → LLM，喂 rules 产物
+def test_phrase_still_low_feeds_phrase_output_to_llm(monkeypatch):
+    # 短语有产物但仍低分 → LLM，喂短语产物
     _force_key(monkeypatch)
-    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: RULES_CLEAN)
+    partial = "部分清洗后仍有残留味道的内容。" * 6
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", lambda t: partial)
     monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 40)
 
     seen = {"input": None}
@@ -130,15 +137,18 @@ def test_rules_rewrite_still_low_feeds_rules_output_to_llm(monkeypatch):
     monkeypatch.setattr(flavor_hook, "_llm_rewrite_sync", _llm)
     out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
     assert out == LLM_CLEAN
-    assert seen["input"] == RULES_CLEAN
+    assert seen["input"] == partial
 
 
-def test_rules_rewrite_failure_then_llm_uses_original(monkeypatch):
-    # rules 改写返回 None → LLM 用原文
+def test_phrase_failure_then_llm_uses_original(monkeypatch):
+    # 短语改写抛异常 → 回原文喂 LLM
     _force_key(monkeypatch)
     monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 40)
-    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: None)
 
+    def _boom_phrase(t):
+        raise RuntimeError("phrase engine error")
+
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", _boom_phrase)
     seen = {"input": None}
 
     def _llm(text, c, key):

@@ -30,6 +30,7 @@ from anti_ai_flavor.punctuation import (
     normalize_punctuation,
     protected_tokens_preserved,
 )
+from anti_ai_flavor.phrase_rewrite import phrase_rewrite
 
 logger = logging.getLogger(__name__)
 
@@ -214,26 +215,37 @@ async def apply_flavor_hook(
         )
         return text
 
-    # 文本不达标 → 先跑纯 rules 改写，改写后再评分，达标即发（0 token）
-    rules_out = _rules_rewrite(text)
+    # 文本不达标 → 短语级改写（整段黑话搭配 → 语法完整的人话，0 token）。
+    # 只替换、不裸删；无安全规则命中则原样保留。
+    try:
+        rules_out = phrase_rewrite(text)
+    except Exception as exc:
+        logger.warning("flavor_hook: 短语改写失败，进入 LLM: %s", exc)
+        rules_out = text
     rules_out = rules_out.strip() if rules_out else ""
+
     if rules_out and rules_out != text:
-        rules_out_score = _rules_score(rules_out)
-        if rules_out_score is not None and rules_out_score >= int(cfg["pass_score"]):
+        # 短语改写不能破坏 URL/版本/数字；被破坏则不采用，直接走 LLM。
+        if not protected_tokens_preserved(text, rules_out):
+            logger.info("flavor_hook: 短语改写破坏了关键内容，进入 LLM")
+            rules_out = text
+        else:
+            rules_out_score = _rules_score(rules_out)
+            if rules_out_score is not None and rules_out_score >= int(cfg["pass_score"]):
+                logger.info(
+                    "flavor_hook: 短语改写后分数 %d ≥ %d，采用（%d → %d chars）",
+                    rules_out_score, cfg["pass_score"], len(text), len(rules_out),
+                )
+                return normalize_punctuation(rules_out)
             logger.info(
-                "flavor_hook: rules 改写后分数 %d ≥ %d，采用（%d → %d chars）",
+                "flavor_hook: 短语改写后仍 %s < %d，进入 LLM（%d → %d chars）",
                 rules_out_score, cfg["pass_score"], len(text), len(rules_out),
             )
-            return normalize_punctuation(rules_out)
-        logger.info(
-            "flavor_hook: rules 改写后仍 %s < %d，进入 LLM（%d → %d chars）",
-            rules_out_score, cfg["pass_score"], len(text), len(rules_out),
-        )
     else:
-        logger.info("flavor_hook: rules 改写无实质变化，进入 LLM")
+        logger.info("flavor_hook: 短语改写无命中，进入 LLM")
 
-    # rules 改写后仍不达标（或评分器不可用）→ LLM 改写。喂给 LLM 的是 rules 产物，
-    # 让它在已清洗的基础上重构；rules 失败则用规范化文本。
+    # 短语改写后仍不达标（或无命中）→ LLM 改写。喂给 LLM 的是短语改写产物，
+    # 让它在已清洗的基础上重构；无命中则用规范化文本。
     llm_input = rules_out or text
     api_key = _resolve_api_key()
     if not api_key:
