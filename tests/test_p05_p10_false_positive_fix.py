@@ -11,9 +11,18 @@
 - "高效、稳定、可扩展" → 3 个抽象词 → 命中
 """
 
+from pathlib import Path
+
 import pytest
 
 from anti_ai_flavor.scoring import _count_pattern_hits, score_text
+
+# 仓内夹具：一段含多处强 AI 黑话的合成简历文本（rules 清洗后 raw 计数应明显下降）。
+# 2026-10-12 前本用例硬编码读 /tmp/aaf-ab/v8.txt（外部临时文件，重启即失，长期挂红），
+# 原文未入库无法找回，且断言只依赖「含 AI 味 → rules 降 raw」这一性质，故以仓内合成夹具替代。
+AI_RESUME_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "ai_resume_sample.txt"
+)
 
 
 class TestP05P10FalsePositiveFix:
@@ -58,9 +67,9 @@ class TestP05P10FalsePositiveFix:
             "强黑话混入技术列举应命中"
 
     def test_rules_clean_reduces_ai_score(self):
-        """规则清洗后 v8 → v8-rules，AI 味分应明显降低"""
+        """规则清洗后 AI 味简历 → 清洗稿，AI 味 raw 计数应明显降低"""
         from anti_ai_flavor import rewrite_text
-        v8_text = open("/tmp/aaf-ab/v8.txt").read()
+        v8_text = AI_RESUME_FIXTURE.read_text(encoding="utf-8")
         v8_rules = rewrite_text(v8_text)
         score_v8 = score_text(v8_text)
         score_rules = score_text(v8_rules)
