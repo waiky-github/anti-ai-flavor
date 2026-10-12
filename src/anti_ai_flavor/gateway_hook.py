@@ -5,7 +5,12 @@ Flavor hook — gateway 回复发出前自动检测并清洗「AI 味儿」。
   1. 只处理纯中文文本（无 MEDIA:/图片/附件标记），长度达阈值；
   2. rules-only score_text 毫秒检测，分数达标直接放行，不烧 token；
   3. 不达标 → 先跑纯 rules rewrite_text，改写后再评分，达标即发（0 token）；
-  4. rules 改写后仍不达标（或没实质变化）→ 线程池跑 llm_rewrite（MiniMax-M3 默认），带超时；
+  4. rules 改写后仍不达标（或没实质变化）→ LLM 改写，带超时。模型通道二选一：
+     a) 宿主注入 transport（Hermes gateway）：走 agent.auxiliary_client，协议无关、
+        自带主 provider→fallback 链，读 auxiliary.flavor.{provider,model} 覆盖，
+        缺省 auto=用当前主模型；本模块不自读 key。
+     b) 独立 / CLI 未注入：OpenAI 直连（默认 MiniMax-M3，读 ANTI_AI_LLM_* 或
+        profile .env 的 MINIMAX_CN_API_KEY），在线程池执行。
   5. 任何异常 / 超时 / 改写结果异常 → 原样返回，绝不能因为本 hook 吞掉回复。
 
 配置（gateway config，均有默认值）：
@@ -171,6 +176,58 @@ def _resolve_api_key() -> Optional[str]:
     return _read_env_file_key("MINIMAX_CN_API_KEY")
 
 
+# ── 可注入的宿主模型传输层 ─────────────────────────────────────────────
+# 部署在 Hermes gateway 时，由 wrapper（gateway/flavor_hook.py）在导入期注册一个
+# async transport，内部走 agent.auxiliary_client（协议无关、自带主 provider→fallback
+# 链、读 auxiliary.flavor.{provider,model} 覆盖）。注册后 hook 不再自读 key、不自建
+# OpenAI 连接；未注册（CLI / 独立使用）时回退下面的直连路径，行为与旧版一致。
+_LLM_TRANSPORT = None
+
+
+def register_llm_transport(transport) -> None:
+    """注册宿主模型传输层。transport(messages: list[dict]) -> str | awaitable[str]。"""
+    global _LLM_TRANSPORT
+    _LLM_TRANSPORT = transport
+
+
+def get_registered_llm_transport():
+    """返回当前注册的 transport（未注册为 None）。主要供测试与诊断使用。"""
+    return _LLM_TRANSPORT
+
+
+async def _llm_rewrite_via_transport(
+    text: str,
+    max_chunk_chars: int,
+    transport,
+    max_attempts: int = 3,
+) -> str:
+    """通过注入的宿主 transport 异步改写。
+
+    与直连路径一致：模型偶发只输出 thinking 不给正文（``剥离 thinking 块后为空``）
+    属瞬时失败，自动重试至多 max_attempts 次；其他异常立即上抛，由外层兜底发原文。
+    """
+    from anti_ai_flavor.llm_rewrite import llm_rewrite_async
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await llm_rewrite_async(
+                text,
+                transport=transport,
+                max_chunk_chars=max_chunk_chars,
+            )
+        except RuntimeError as exc:
+            if "剥离 thinking 块后为空" not in str(exc):
+                raise
+            last_exc = exc
+            logger.info(
+                "flavor_hook: LLM 第 %d/%d 次只输出 thinking 未给正文，重试",
+                attempt, max_attempts,
+            )
+    assert last_exc is not None
+    raise last_exc
+
+
 def _llm_rewrite_sync(
     text: str,
     max_chunk_chars: int,
@@ -282,22 +339,34 @@ async def apply_flavor_hook(
 
     # 短语改写后仍不达标（或无命中）→ LLM 改写。喂给 LLM 的是候选文本。
     llm_input = candidate
-    api_key = _resolve_api_key()
-    if not api_key:
-        logger.warning(
-            "flavor_hook: 未解析到可用 LLM key（env/.env 均无效），发原文",
-        )
-        return text
+    transport = _LLM_TRANSPORT
     try:
-        rewritten = await asyncio.wait_for(
-            asyncio.to_thread(
-                _llm_rewrite_sync,
-                llm_input,
-                int(cfg["llm_max_chunk_chars"]),
-                api_key,
-            ),
-            timeout=float(cfg["llm_timeout"]),
-        )
+        if transport is not None:
+            # 宿主注入通道（Hermes auxiliary_client）：协议无关、自带 provider
+            # fallback、读 auxiliary.flavor 覆盖；无需本模块自读 key。
+            rewritten = await asyncio.wait_for(
+                _llm_rewrite_via_transport(
+                    llm_input, int(cfg["llm_max_chunk_chars"]), transport
+                ),
+                timeout=float(cfg["llm_timeout"]),
+            )
+        else:
+            # 独立 / CLI 回退：OpenAI 直连（默认 MiniMax-M3）。
+            api_key = _resolve_api_key()
+            if not api_key:
+                logger.warning(
+                    "flavor_hook: 未解析到可用 LLM key（env/.env 均无效），发原文",
+                )
+                return text
+            rewritten = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _llm_rewrite_sync,
+                    llm_input,
+                    int(cfg["llm_max_chunk_chars"]),
+                    api_key,
+                ),
+                timeout=float(cfg["llm_timeout"]),
+            )
     except asyncio.TimeoutError:
         logger.warning(
             "flavor_hook: LLM 改写超时（%ss），发原文", cfg["llm_timeout"],

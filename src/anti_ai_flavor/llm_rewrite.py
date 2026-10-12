@@ -14,10 +14,17 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional, Union
 
 from .core import rewrite_text
 from .dedup import deduplicate_text
+
+# 可注入的模型传输层：入参 messages（OpenAI 形状），返回模型正文文本（未剥 thinking）。
+# - 同步 transport 返回 str
+# - 异步 transport 返回 Awaitable[str]
+# gateway 场景注入 Hermes 的 agent.auxiliary_client（协议无关、自带 provider fallback），
+# CLI/独立场景用默认的 OpenAI 直连 transport。
+LLMTransport = Callable[[List[Dict[str, str]]], Union[str, Awaitable[str]]]
 
 
 # 默认 LLM 端点：minimax 国内 OpenAI 兼容（MiniMax-M3，1M 上下文，MSA 架构）
@@ -25,7 +32,7 @@ from .dedup import deduplicate_text
 DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"
 DEFAULT_MODEL = "MiniMax-M3"
 
-__version__ = "0.2.15"
+__version__ = "0.2.16"
 
 
 # v0.2.9.3 升级目标：从"AI 在做句子重构" → "真人工程师在写项目落地叙事"
@@ -189,6 +196,47 @@ def _build_user_prompt(
     return "\n".join(parts)
 
 
+def _build_messages(
+    text: str,
+    project_context: Optional[str] = None,
+    project_sections: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, str]]:
+    """构造单次调用的 messages（system + user）。transport 无关。"""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": _build_user_prompt(text, project_context, project_sections)},
+    ]
+
+
+def _default_openai_transport_factory(
+    api_key: str, base_url: str, model: str,
+    temperature: float, max_tokens: int, timeout: float,
+) -> LLMTransport:
+    """构造默认的 OpenAI 直连同步 transport（CLI / 独立场景）。"""
+    try:
+        from openai import OpenAI
+    except ImportError as e:
+        raise ImportError(
+            "llm_rewrite 需要 openai 包，请先 `pip install openai`"
+        ) from e
+
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+
+    def _transport(messages: List[Dict[str, str]]) -> str:
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        except Exception as e:
+            raise RuntimeError(f"LLM rewrite 调用失败: {e}") from e
+        return resp.choices[0].message.content
+
+    return _transport
+
+
 def _llm_call_once(
     text: str,
     *,
@@ -201,39 +249,137 @@ def _llm_call_once(
     project_context: Optional[str] = None,
     project_sections: Optional[Dict[str, str]] = None,
 ) -> str:
-    """单段 LLM 调用：构造 prompt → 调 API → 剥 thinking。"""
-    try:
-        from openai import OpenAI
-    except ImportError as e:
-        raise ImportError(
-            "llm_rewrite 需要 openai 包，请先 `pip install openai`"
-        ) from e
-
-    user_prompt = _build_user_prompt(text, project_context, project_sections)
-
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-    except Exception as e:
-        raise RuntimeError(f"LLM rewrite 调用失败: {e}") from e
-
-    content = resp.choices[0].message.content
+    """单段 LLM 调用（默认 OpenAI 直连）：构造 prompt → 调 API → 剥 thinking。"""
+    messages = _build_messages(text, project_context, project_sections)
+    transport = _default_openai_transport_factory(
+        api_key, base_url, model, temperature, max_tokens, timeout
+    )
+    content = transport(messages)
     if not content:
         raise RuntimeError("LLM rewrite 返回空内容")
-
     content_clean = _strip_thinking(content)
     if not content_clean:
         raise RuntimeError("LLM rewrite 剥离 thinking 块后为空")
-
     return content_clean
+
+
+async def _run_transport(transport: LLMTransport, messages: List[Dict[str, str]]) -> str:
+    """调 transport，透明支持同步返回 str 或异步返回 awaitable。"""
+    result = transport(messages)
+    if hasattr(result, "__await__"):
+        result = await result
+    if not result:
+        raise RuntimeError("LLM rewrite 返回空内容")
+    return result
+
+
+def _prepare_chunks(
+    text: str,
+    *,
+    scene: str,
+    max_chunk_chars: int,
+    dedup: bool,
+    dedup_similarity: float,
+) -> List[str]:
+    """改写前的结构去重 + pattern 预清洗 + 长文分段（transport 无关）。"""
+    if dedup:
+        text, _dedup_stats = deduplicate_text(
+            text, similarity_threshold=dedup_similarity
+        )
+    pre_cleaned = rewrite_text(text, scene=scene)
+    return _split_long_text(pre_cleaned, max_chars=max_chunk_chars)
+
+
+def _resolve_openai_config(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    model: Optional[str],
+) -> tuple[str, str, str]:
+    """解析默认 OpenAI 直连所需的 key/base_url/model（env 回退到 MiniMax 默认）。"""
+    resolved_key = api_key or os.environ.get("ANTI_AI_LLM_API_KEY", "")
+    if not resolved_key:
+        raise ValueError(
+            "LLM rewrite 需要显式传入 api_key、设置 ANTI_AI_LLM_API_KEY，或注入 transport"
+        )
+    resolved_base_url: str = (
+        base_url
+        or os.environ.get("ANTI_AI_LLM_BASE_URL")
+        or DEFAULT_BASE_URL
+    )
+    resolved_model: str = (
+        model
+        or os.environ.get("ANTI_AI_LLM_MODEL")
+        or DEFAULT_MODEL
+    )
+    return resolved_key, resolved_base_url, resolved_model
+
+
+async def _rewrite_chunks_async(
+    chunks: List[str],
+    *,
+    transport: LLMTransport,
+    project_context: Optional[str],
+    project_sections: Optional[Dict[str, str]],
+) -> str:
+    """对每段走注入 transport（可同步可异步），剥 thinking，空行拼接。"""
+    rewritten: List[str] = []
+    for chunk in chunks:
+        messages = _build_messages(chunk, project_context, project_sections)
+        content = await _run_transport(transport, messages)
+        clean = _strip_thinking(content)
+        if not clean:
+            raise RuntimeError("LLM rewrite 剥离 thinking 块后为空")
+        rewritten.append(clean)
+    return "\n\n".join(rewritten)
+
+
+async def llm_rewrite_async(
+    text: str,
+    *,
+    transport: Optional[LLMTransport] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    scene: str = "default",
+    temperature: float = 0.3,
+    max_tokens: int = 8000,
+    timeout: float = 60.0,
+    max_chunk_chars: int = 1500,
+    project_context: Optional[str] = None,
+    project_sections: Optional[Dict[str, str]] = None,
+    dedup: bool = True,
+    dedup_similarity: float = 0.90,
+) -> str:
+    """异步改写入口。
+
+    传 ``transport`` 时用注入的模型传输层（推荐 gateway 场景：注入 Hermes 的
+    ``agent.auxiliary_client.async_call_llm``，协议无关、自带 provider fallback），
+    忽略 api_key/base_url/model；不传时退回默认 OpenAI 直连（需 api_key）。
+    其余参数含义同 :func:`llm_rewrite`。
+    """
+    chunks = _prepare_chunks(
+        text,
+        scene=scene,
+        max_chunk_chars=max_chunk_chars,
+        dedup=dedup,
+        dedup_similarity=dedup_similarity,
+    )
+
+    if transport is None:
+        resolved_key, resolved_base_url, resolved_model = _resolve_openai_config(
+            api_key, base_url, model
+        )
+        transport = _default_openai_transport_factory(
+            resolved_key, resolved_base_url, resolved_model,
+            temperature, max_tokens, timeout,
+        )
+
+    return await _rewrite_chunks_async(
+        chunks,
+        transport=transport,
+        project_context=project_context,
+        project_sections=project_sections,
+    )
 
 
 def llm_rewrite(
@@ -251,90 +397,51 @@ def llm_rewrite(
     project_sections: Optional[Dict[str, str]] = None,
     dedup: bool = True,
     dedup_similarity: float = 0.90,
+    transport: Optional[LLMTransport] = None,
 ) -> str:
     """
-    使用 LLM 对文本做结构层面的人类化改写。
+    使用 LLM 对文本做结构层面的人类化改写（同步入口）。
 
     参数：
       text：待改写文本
+      transport：可注入的模型传输层（入参 messages，返回 str 或 awaitable[str]）。
+          传入时优先于 api_key/base_url/model，用于复用宿主（如 Hermes）的
+          统一模型通道与 provider fallback。
       api_key：LLM API Key；默认读环境变量 ANTI_AI_LLM_API_KEY
       base_url：LLM base URL；默认 ANTI_AI_LLM_BASE_URL → minimax 国内（MiniMax-M3）
       model：模型名；默认 ANTI_AI_LLM_MODEL → MiniMax-M3
       scene：场景，透传给 rewrite_text() 先做 pattern 预清洗，再做 LLM 后处理
-      temperature / max_tokens：控制改写自由度（默认 max_tokens=8000，给 minimax-M3 thinking 留足额度；实测 thinking 可占 4000+ token）
-      max_chunk_chars：长文本切分阈值（默认 1500 字符），避免单段太长导致 thinking 占满 max_tokens
-      project_context：自由文本项目细节（团队规模/项目周期/业务场景/解决的痛点），LLM 改写时参考补「叙事性描述」
-      project_sections：按段落标题精细控制，dict[段标题, 细节]。仅改写到对应段落时使用，其他段落忽略
-      dedup：改写前是否做结构层去重/多版合并（默认 True）。剥离思维链、
-          去除重复板块，避免把同一份内容的多个版本全部改写保留
-      dedup_similarity：去重近似阈值（默认 0.90）
+      temperature / max_tokens：控制改写自由度（默认 max_tokens=8000，给 minimax-M3 thinking 留足额度）
+      max_chunk_chars：长文本切分阈值（默认 1500 字符）
+      project_context / project_sections：项目叙事细节（可选）
+      dedup / dedup_similarity：改写前结构去重开关与近似阈值
 
     返回：
       改写后的文本
 
     异常：
-      ImportError：未装 openai 依赖
-      ValueError：未配置 API key
+      ImportError：未装 openai 依赖（仅默认直连路径）
+      ValueError：未配置 API key 且未注入 transport
       RuntimeError：LLM 调用失败
     """
-    # 第 0 步：结构层去重 / 多版合并 / 思维链剥离（在 pattern 预清洗之前）
-    if dedup:
-        text, _dedup_stats = deduplicate_text(
-            text, similarity_threshold=dedup_similarity
-        )
+    import asyncio
 
-    # 先做 pattern 预清洗，再给 LLM 做后处理，避免 LLM 重复处理规则已覆盖的套话
-    pre_cleaned = rewrite_text(text, scene=scene)
-
-    resolved_key = api_key or os.environ.get("ANTI_AI_LLM_API_KEY", "")
-    if not resolved_key:
-        raise ValueError(
-            "LLM rewrite 需要显式传入 api_key 或设置环境变量 ANTI_AI_LLM_API_KEY"
-        )
-
-    # base_url / model 优先级：参数 > ANTI_AI_LLM_* env > minimax 默认
-    resolved_base_url: str = (
-        base_url
-        or os.environ.get("ANTI_AI_LLM_BASE_URL")
-        or DEFAULT_BASE_URL
-    )
-    resolved_model: str = (
-        model
-        or os.environ.get("ANTI_AI_LLM_MODEL")
-        or DEFAULT_MODEL
-    )
-
-    # 长文本自动分段：避免单段太长，thinking 占满 max_tokens 导致改写被截断
-    chunks = _split_long_text(pre_cleaned, max_chars=max_chunk_chars)
-
-    if len(chunks) == 1:
-        return _llm_call_once(
-            chunks[0],
-            api_key=resolved_key,
-            base_url=resolved_base_url,
-            model=resolved_model,
+    async def _run() -> str:
+        return await llm_rewrite_async(
+            text,
+            transport=transport,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            scene=scene,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            max_chunk_chars=max_chunk_chars,
             project_context=project_context,
             project_sections=project_sections,
+            dedup=dedup,
+            dedup_similarity=dedup_similarity,
         )
 
-    # 多段：每段独立调用，最后用空行拼接
-    # 项目细节在每段都传（LLM 自己识别是否相关），不做段落级匹配
-    rewritten_chunks = []
-    for chunk in chunks:
-        rewritten_chunks.append(
-            _llm_call_once(
-                chunk,
-                api_key=resolved_key,
-                base_url=resolved_base_url,
-                model=resolved_model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout,
-                project_context=project_context,
-                project_sections=project_sections,
-            )
-        )
-    return "\n\n".join(rewritten_chunks)
+    return asyncio.run(_run())

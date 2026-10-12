@@ -33,6 +33,14 @@ def _force_key(monkeypatch, key="test-secret-key"):
     monkeypatch.setattr(flavor_hook, "_resolve_api_key", lambda: key)
 
 
+@pytest.fixture(autouse=True)
+def _reset_injected_transport():
+    """每个用例前后清空模块级注入 transport，防止全局状态串扰。"""
+    flavor_hook.register_llm_transport(None)
+    yield
+    flavor_hook.register_llm_transport(None)
+
+
 # ---------- 资格 / 开关 ----------
 
 def test_disabled_returns_original():
@@ -357,3 +365,119 @@ def test_llm_other_runtime_error_not_retried(monkeypatch):
     with pytest.raises(RuntimeError, match="鉴权失败 401"):
         flavor_hook._llm_rewrite_sync("黑话原文", 1500, "key")
     assert calls["n"] == 1
+
+
+# ---------- 注入 transport（宿主通道） ----------
+
+def test_register_and_get_transport():
+    def t(messages):
+        return "x"
+
+    flavor_hook.register_llm_transport(t)
+    assert flavor_hook.get_registered_llm_transport() is t
+    flavor_hook.register_llm_transport(None)
+    assert flavor_hook.get_registered_llm_transport() is None
+
+
+def test_injected_async_transport_used_without_key(monkeypatch):
+    # 注册 async transport 后：不解析 key、不走直连线程；transport 收到 messages。
+    key_called = {"n": False}
+    monkeypatch.setattr(
+        flavor_hook, "_resolve_api_key",
+        lambda: key_called.__setitem__("n", True) or "should-not-be-used",
+    )
+    sync_called = {"n": False}
+    monkeypatch.setattr(
+        flavor_hook, "_llm_rewrite_sync",
+        lambda *a, **k: sync_called.__setitem__("n", True) or "x",
+    )
+
+    seen = {"messages": None, "calls": 0}
+
+    async def _transport(messages):
+        seen["calls"] += 1
+        seen["messages"] = messages
+        return LLM_CLEAN
+
+    flavor_hook.register_llm_transport(_transport)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 30)
+    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+
+    out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
+    assert out == LLM_CLEAN
+    assert seen["calls"] == 1
+    assert key_called["n"] is False
+    assert sync_called["n"] is False
+    # messages 为 system + user 两条
+    assert isinstance(seen["messages"], list)
+    assert seen["messages"][0]["role"] == "system"
+    assert seen["messages"][1]["role"] == "user"
+
+
+def test_injected_sync_transport_also_supported(monkeypatch):
+    # 注入的 transport 也可以是同步 callable（返回 str），透明 await。
+    flavor_hook.register_llm_transport(lambda messages: LLM_CLEAN)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 30)
+    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+    out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
+    assert out == LLM_CLEAN
+
+
+def test_injected_transport_exception_returns_original(monkeypatch):
+    async def _boom(messages):
+        raise RuntimeError("auxiliary provider 全挂了")
+
+    flavor_hook.register_llm_transport(_boom)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 30)
+    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+    out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
+    assert out == AI_FLAVOR
+
+
+def test_injected_transport_timeout_returns_original(monkeypatch):
+    async def _slow(messages):
+        await asyncio.sleep(0.2)
+        return LLM_CLEAN
+
+    flavor_hook.register_llm_transport(_slow)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 30)
+    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+    out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg(llm_timeout=0.01)))
+    assert out == AI_FLAVOR
+
+
+def test_injected_transport_empty_thinking_retries(monkeypatch):
+    # 经注入通道，模型前两次只给 thinking（剥后为空），第三次成功。
+    calls = {"n": 0}
+
+    def _transport(messages):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            # 含 think 块且剥后为空 → llm_rewrite_async 抛「剥离 thinking 块后为空」
+            return "<think>模型只在思考</think>   "
+        return LLM_CLEAN
+
+    flavor_hook.register_llm_transport(_transport)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 30)
+    monkeypatch.setattr(flavor_hook, "_rules_rewrite", lambda t: t)
+    out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
+    assert out == LLM_CLEAN
+    assert calls["n"] == 3
+
+
+def test_no_transport_falls_back_to_direct_key_path(monkeypatch):
+    # 未注册 transport 时，行为退回旧版：解析 key + 线程池直连。
+    assert flavor_hook.get_registered_llm_transport() is None
+    _force_key(monkeypatch)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 40)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", lambda t: t)
+    seen = {}
+
+    def _llm(text, c, key):
+        seen["key"] = key
+        return LLM_CLEAN
+
+    monkeypatch.setattr(flavor_hook, "_llm_rewrite_sync", _llm)
+    out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
+    assert out == LLM_CLEAN
+    assert seen["key"] == "test-secret-key"
