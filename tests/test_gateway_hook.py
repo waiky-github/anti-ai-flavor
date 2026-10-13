@@ -481,3 +481,129 @@ def test_no_transport_falls_back_to_direct_key_path(monkeypatch):
     out = _run(flavor_hook.apply_flavor_hook(AI_FLAVOR, _cfg()))
     assert out == LLM_CLEAN
     assert seen["key"] == "test-secret-key"
+
+
+# ---------- async_edit 两阶段（先发原文 + 后台改写） ----------
+
+def test_async_edit_preflight_returns_original_without_touching_llm(monkeypatch):
+    """async_edit 发送前阶段必须毫秒返回原文、不跑 rules 评分也不跑 LLM。"""
+    def _boom(*a, **k):
+        raise AssertionError("发送前阶段不应触发 rules/LLM")
+
+    monkeypatch.setattr(flavor_hook, "_rules_score", _boom)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", _boom)
+    flavor_hook.register_llm_transport(_boom)
+
+    send_text, pending = _run(
+        flavor_hook.prepare_flavor_send(AI_FLAVOR, _cfg(mode="async_edit"))
+    )
+    assert send_text == AI_FLAVOR      # 立即发原文
+    assert pending == AI_FLAVOR        # 标记需要后台改写
+
+
+def test_async_edit_preflight_disabled_no_pending():
+    send_text, pending = _run(
+        flavor_hook.prepare_flavor_send(AI_FLAVOR, _cfg(mode="async_edit", enabled=False))
+    )
+    assert send_text == AI_FLAVOR
+    assert pending is None
+
+
+def test_async_edit_preflight_ineligible_no_pending():
+    send_text, pending = _run(
+        flavor_hook.prepare_flavor_send("短", _cfg(mode="async_edit", min_chars=200))
+    )
+    assert send_text == "短"
+    assert pending is None
+
+
+def test_sync_mode_preflight_runs_pipeline_and_no_pending(monkeypatch):
+    """显式 mode=sync 时 prepare_flavor_send 仍跑完整链路（旧行为）。"""
+    _force_key(monkeypatch)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 40)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", lambda t: t)
+    monkeypatch.setattr(flavor_hook, "_llm_rewrite_sync", lambda t, c, k: LLM_CLEAN)
+    send_text, pending = _run(
+        flavor_hook.prepare_flavor_send(AI_FLAVOR, _cfg(mode="sync"))
+    )
+    assert send_text == LLM_CLEAN
+    assert pending is None
+
+
+def test_async_edit_guard_skips_code_and_url(monkeypatch):
+    """技术内容守卫：含围栏代码/行内代码/URL 的回复后台不进 LLM，返回 None。"""
+    def _boom(*a, **k):
+        raise AssertionError("技术内容不应触发 rules/LLM")
+
+    monkeypatch.setattr(flavor_hook, "_rules_score", _boom)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", _boom)
+    flavor_hook.register_llm_transport(_boom)
+
+    samples = [
+        "执行命令如下：\n```\nsystemctl restart hermes\n```\n然后检查。" + "中文说明" * 40,
+        "文档见 https://example.com/docs/v1.2.3 请查收。" + "中文说明" * 40,
+        "用 `pip install -e .` 安装即可。" + "中文说明" * 40,
+    ]
+    for text in samples:
+        assert _run(flavor_hook.rewrite_post_send(text, _cfg(mode="async_edit"))) is None
+
+
+def test_async_edit_guard_respects_toggle(monkeypatch):
+    """skip_code_for_llm=False 时含 URL 的回复仍会进完整链路（LLM 被调用）。"""
+    text = "参考 https://example.com 请看 " + AI_FLAVOR
+    seen = {"llm": False}
+
+    def _llm(t, c, k):
+        seen["llm"] = True
+        # 保留原文 URL，否则会被 protected_tokens 校验拦回原文
+        return "参考 https://example.com 系统稳定无告警，本周一切正常。" * 8
+
+    _force_key(monkeypatch)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 40)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", lambda t: t)
+    monkeypatch.setattr(flavor_hook, "_llm_rewrite_sync", _llm)
+    out = _run(
+        flavor_hook.rewrite_post_send(
+            text, _cfg(mode="async_edit", skip_code_for_llm=False)
+        )
+    )
+    assert seen["llm"] is True
+    assert out is not None and "https://example.com" in out
+
+
+def test_async_edit_post_send_returns_clean_text(monkeypatch):
+    """纯中文脏文本后台走完整链路，返回干净文本供 edit 替换。"""
+    _force_key(monkeypatch)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 40)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", lambda t: t)
+    monkeypatch.setattr(flavor_hook, "_llm_rewrite_sync", lambda t, c, k: LLM_CLEAN)
+    out = _run(flavor_hook.rewrite_post_send(AI_FLAVOR, _cfg(mode="async_edit")))
+    assert out == LLM_CLEAN
+
+
+def test_async_edit_post_send_clean_text_returns_none(monkeypatch):
+    """后台改写后文本本就干净（rules 高分放行，等于规范化原文）→ 无需编辑。"""
+    # normalize_punctuation 对无标点问题的文本原样返回，candidate == original
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 95)
+    out = _run(flavor_hook.rewrite_post_send(LONG_NORMAL, _cfg(mode="async_edit")))
+    assert out is None
+
+
+def test_async_edit_post_send_failure_returns_none(monkeypatch):
+    """后台 LLM 抛异常 → 保留已发原文，返回 None。"""
+    async def _boom(messages):
+        raise RuntimeError("provider down")
+
+    flavor_hook.register_llm_transport(_boom)
+    monkeypatch.setattr(flavor_hook, "_rules_score", lambda t: 30)
+    monkeypatch.setattr(flavor_hook, "phrase_rewrite", lambda t: t)
+    out = _run(flavor_hook.rewrite_post_send(AI_FLAVOR, _cfg(mode="async_edit")))
+    assert out is None
+
+
+def test_contains_structured_content_detection():
+    assert flavor_hook._contains_structured_content("```\ncode\n```")
+    assert flavor_hook._contains_structured_content("见 http://x.com 文档")
+    assert flavor_hook._contains_structured_content("运行 `ls -l` 查看")
+    assert not flavor_hook._contains_structured_content("这是一段没有代码和链接的纯中文说明文字")
+

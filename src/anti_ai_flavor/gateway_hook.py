@@ -53,6 +53,17 @@ _DEFAULTS: Dict[str, Any] = {
     "llm_timeout": 90,
     "llm_max_chunk_chars": 1500,
     "min_keep_chars": 80,
+    # 发送模式：
+    #   "sync"      发送前同步跑完 rules+LLM（默认；CLI/独立使用的旧行为，会阻塞
+    #               回复，最长 llm_timeout）
+    #   "async_edit" 先立即发原文（毫秒判定），再后台 LLM 改写并用平台 edit_message
+    #               静默就地替换；平台不支持编辑或改写不可信时保留已发原文。
+    #               Hermes gateway 部署时在 config.yaml 显式开启。
+    "mode": "sync",
+    # 技术内容守卫：含围栏/行内代码块或 URL 的回复不进 LLM（LLM 对版本号/命令/
+    # 链接容易自由发挥，且这类回复用户对延迟敏感）。只在 async_edit 模式于后台
+    # 判定；sync 模式仍走原逻辑（由 protected_tokens 校验兜底）。
+    "skip_code_for_llm": True,
 }
 
 
@@ -106,6 +117,21 @@ def _is_eligible(text: str, min_chars: int) -> bool:
     # 中文字符数需达到长度的 30%，避免中英混合/纯英文文本被中文规则处理
     cjk_count = len(_CJK_RE.findall(stripped))
     return cjk_count >= max(20, int(len(stripped) * 0.3))
+
+
+def _contains_structured_content(text: str) -> bool:
+    """技术内容守卫：回复是否含代码块 / 行内代码 / URL / 邮箱。
+
+    这类回复（命令、版本号、链接、代码）进 LLM 既慢又容易被自由发挥破坏关键
+    token，且用户对其延迟敏感。命中即不进 LLM（标点规范化/短语改写仍安全）。
+    复用 punctuation 里的受保护结构正则，避免两处词表漂移。
+    """
+    try:
+        from anti_ai_flavor.punctuation import _PROTECT_RES
+        return any(rx.search(text) for rx in _PROTECT_RES)
+    except Exception:
+        # 拿不到正则时保守判定：只认围栏代码块
+        return "```" in (text or "")
 
 
 def _rules_score(text: str) -> Optional[int]:
@@ -261,22 +287,12 @@ def _llm_rewrite_sync(
     raise last_exc
 
 
-async def apply_flavor_hook(
-    text: Optional[str],
-    gateway_config: Optional[Dict[str, Any]] = None,
-) -> str:
-    """对回复应用 flavor 检测/改写。
+async def _run_full_pipeline(original: str, cfg: Dict[str, Any]) -> str:
+    """完整 rules→(LLM) 改写链路。任何失败路径返回原文。
 
-    返回可发送文本；任何失败路径都返回原文。
+    调用方需已通过 enabled / eligible 判定。sync 模式与 async_edit 后台共用。
     """
-    original = text or ""
-    cfg = resolve_flavor_config(gateway_config)
-
-    if not cfg["enabled"]:
-        return original
-    if not _is_eligible(original, int(cfg["min_chars"])):
-        return original
-
+    text = original
     # 标点规范化（纯规则、0 token、幂等）。在评分/改写前先做，后续链路都基于
     # 规范化文本；任何异常都回退原文，不影响回复。
     try:
@@ -419,3 +435,85 @@ async def apply_flavor_hook(
         score, new_score, len(text), len(rewritten),
     )
     return normalize_punctuation(rewritten)
+
+
+async def prepare_flavor_send(
+    text: Optional[str],
+    gateway_config: Optional[Dict[str, Any]] = None,
+) -> tuple:
+    """发送前同步阶段（必须毫秒返回，绝不阻塞回复）。
+
+    返回 ``(send_text, pending_text)``：
+      * 不处理 / sync 模式 → ``(可直接发送的文本, None)``
+      * async_edit 模式   → ``(原文, 原文)``：立即把原文发出，调用方在发送成功
+        拿到 message_id 后，用 pending_text 调 :func:`rewrite_post_send` 后台改写，
+        再用平台 edit_message 就地替换。
+
+    async_edit 模式下本函数**不做任何 LLM/规则改写**，只做 enabled/eligible 判定，
+    因此已发文本与最终文本之间不会出现"先短语改写、后又 LLM 重写"的二次跳变；
+    所有清洗都在后台一次性完成，失败则保留已发原文。
+    """
+    original = text or ""
+    cfg = resolve_flavor_config(gateway_config)
+
+    if not cfg["enabled"] or not original:
+        return original, None
+    if not _is_eligible(original, int(cfg["min_chars"])):
+        return original, None
+
+    if str(cfg.get("mode", "sync")) == "async_edit":
+        # 立即发原文；改写交给后台（含技术守卫）。
+        return original, original
+
+    # sync 旧行为：发送前跑完整个 rules+LLM 链路（会阻塞，最长 llm_timeout）。
+    return await _run_full_pipeline(original, cfg), None
+
+
+async def rewrite_post_send(
+    text: Optional[str],
+    gateway_config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """发送后后台改写（async_edit 模式）。
+
+    对已发出的原文做完整 rules→LLM 清洗。返回应替换成的新文本；无需替换（文本
+    干净、改写不可信、命中技术守卫、任何失败）时返回 ``None``，调用方保留已发
+    原文、绝不重复编辑。
+    """
+    original = text or ""
+    cfg = resolve_flavor_config(gateway_config)
+
+    if not cfg["enabled"] or not original:
+        return None
+    if not _is_eligible(original, int(cfg["min_chars"])):
+        return None
+
+    # 技术内容守卫：代码块/行内代码/URL/邮箱不进 LLM。这类回复 LLM 易破坏版本号、
+    # 命令、链接（曾导致 91s 白等后回退原文），且用户对其延迟/准确性敏感。
+    if cfg.get("skip_code_for_llm", True) and _contains_structured_content(original):
+        logger.info(
+            "flavor_hook: 含代码/链接等技术内容，跳过后台 LLM 改写（%d chars）",
+            len(original),
+        )
+        return None
+
+    out = await _run_full_pipeline(original, cfg)
+    out = (out or "").strip()
+    if not out or out == original:
+        return None
+    return out
+
+
+async def apply_flavor_hook(
+    text: Optional[str],
+    gateway_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """对回复应用 flavor 检测/改写（兼容入口）。
+
+    - mode=sync（旧行为）：发送前跑完 rules+LLM，返回可发送文本，可能阻塞。
+    - mode=async_edit：等价于只取 :func:`prepare_flavor_send` 的即时发送文本
+      （即原文）；真正的改写应由调用方在发送成功后走 :func:`rewrite_post_send`。
+
+    任何失败路径都返回原文。
+    """
+    send_text, _pending = await prepare_flavor_send(text, gateway_config)
+    return send_text
