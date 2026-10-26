@@ -86,6 +86,11 @@ from .whitelist import _is_golden_whitelisted
 
 # === Phase 1：25-pattern 体系核心函数 ===
 
+# 段落分隔哨兵（私用区 PUA 字符，不与其他规则冲突）
+_PARA_SENTINEL = "\ue000"
+_LINE_SENTINEL = "\ue001"
+
+
 def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
     """
     使用 25-pattern 体系重写文本。
@@ -102,7 +107,15 @@ def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
     if not PATTERNS_AVAILABLE:
         # fallback 到原有逻辑
         return _legacy_rewrite(text, scene)
-    
+
+    # 段落分隔必须存活到出口：下游 _cleanup_residue / _merge_sentences 会把
+    # 所有空白折叠成单空格，导致「越改越像一坨」（小红书/公众号长文的空行段落
+    # 全被压平，2026-10-26 实测 570 字 15 段 → 0 段）。这里用私用区哨兵占位，
+    # 出口统一还原成 \n\n。哨兵不属空白，不会被 [\s]+ 吃掉。
+    text = re.sub(r"[ \t]*\n[ \t]*\n+[ \t]*", _PARA_SENTINEL, text)
+    # 段内单换行同样是作者的排版意图（小红书正文常一句一行），一并保住
+    text = re.sub(r"[ \t]*\n[ \t]*", _LINE_SENTINEL, text)
+
     original_text = text
     
     # === 第一步：应用强 pattern（1-4） ===
@@ -340,7 +353,14 @@ def _rewrite_with_patterns(text: str, scene: str = "default") -> str:
     
     # === 第九步：最终清理 ===
     text = _final_cleanup(text)
-    
+
+    # === 第十步：还原段落分隔 ===
+    text = re.sub(r"\s*" + _PARA_SENTINEL + r"\s*", "\n\n", text)
+    text = re.sub(r"\s*" + _LINE_SENTINEL + r"\s*", "\n", text)
+    # 中文标点后不该夹空格（用户 2026-10-10 拍板：纯中文排版不夹空格）；
+    # 句间用空格连接会留下「办法。 我」这种痕，中文读者一眼看出来是机器排的
+    # 只吃空格/制表符，绝不能吃换行——\s 会把刚还原的段落又压平（实测 15 段→4 段）
+    text = re.sub(r"([，。！？、：；）」』】…])[ \t]+(?=[^ \t])", r"\1", text)
     return text.strip()
 
 
@@ -803,60 +823,71 @@ def rewrite_text(text: str, scene: str = "default", *, whitelist_strict: bool = 
 
 
 # ============================================================
-# Phase 2 新增：场景 Pack 自动化匹配
+# 场景自动识别（2026-10-26 重写：文本特征 + 置信度）
 # ============================================================
+#
+# 旧版 SCENE_RULES 只看文件路径关键词（"pr/" / "troubleshoot" / "blog"），
+# 纯文本输入永远落到 "default"，且没有置信度——猜错了也照错的场景改写。
+# 现在统一走 profiles.detector：文本特征加权 + 路径弱先验 + 置信度，
+# 低置信回 base 并置 needs_confirmation，由调用方决定是否追问。
 
-SCENE_RULES = [
-    # (场景名, 匹配函数)
-    ("coder_commit",    lambda p, c: ".git" in p or "COMMIT_EDITMSG" in p or "commit" in Path(p).name.lower()),
-    ("coder_issue_reply", lambda p, c: any(k in p.lower() for k in ["issue", "pull", "pr", "review", "comment"])),
-    ("coder_pr",        lambda p, c: any(k in p.lower() for k in ["pr/", "pull/", "merge_request"])),
-    ("ops_troubleshoot", lambda p, c: any(k in p.lower() for k in ["troubleshoot", "debug", "error", "incident", "postmortem"])),
-    ("ops_log",         lambda p, c: any(k in p.lower() for k in ["log", "ops", "deploy", "incident"])),
-    ("creative_doc",    lambda p, c: any(k in p.lower() for k in ["blog", "article", "creative", "doc/", "docs/"])),
-]
+
+def detect_scene_info(file_path: str = "", content: str = "") -> dict:
+    """返回完整识别结果（含置信度与证据），供 CLI / 网关展示。"""
+    from .profiles.detector import detect_scene
+
+    return detect_scene(content, file_path or None).to_dict()
 
 
 def auto_detect_scene(file_path: str, content: str = "") -> str:
+    """按内容（优先）与路径（弱先验）识别场景。
+
+    低置信时返回 "base"——不硬猜；需要追问时请改用 ``detect_scene_info()``
+    取 ``guessed_scene`` / ``needs_confirmation``。旧返回名（coder_pr /
+    creative_doc / default …）仍可用，profiles.resolve_profile 认作别名。
     """
-    根据文件路径和内容自动匹配场景 pack。
-    
-    返回场景名（如 "coder_commit"），默认返回 "default"。
-    """
-    for scene_name, matcher in SCENE_RULES:
-        if matcher(file_path, content):
-            return scene_name
-    return "default"
+    from .profiles.detector import detect_scene
+
+    return detect_scene(content, file_path or None).scene
 
 
 def rewrite_file_with_auto_scene(file_path: str, output_path: str = None) -> dict:
-    """
-    自动检测场景并重写文件。
-    
+    """自动识别场景并重写文件。
+
     返回: {
         "input": str,
         "output": str,
-        "scene": str,
+        "scene": str,                  # 生效场景；低置信时是 base
+        "scene_confidence": float,
+        "needs_confirmation": bool,    # True 表示识别没把握，上层该问一句
+        "guessed_scene": str | None,   # 没把握时的候选场景
+        "scene_evidence": list[str],
         "changed": bool
     }
     """
+    from .profiles.detector import detect_scene
+
     raw = Path(file_path).read_text(encoding="utf-8")
-    scene = auto_detect_scene(file_path, raw)
-    result = rewrite_text(raw, scene=scene)
-    
+    guess = detect_scene(raw, file_path)
+    result = rewrite_text(raw, scene=guess.scene)
+
     output = {
         "input": raw,
         "output": result,
-        "scene": scene,
+        "scene": guess.scene,
+        "scene_confidence": round(guess.confidence, 3),
+        "needs_confirmation": guess.needs_confirmation,
+        "guessed_scene": guess.guessed_scene if guess.needs_confirmation else None,
+        "scene_evidence": list(guess.evidence),
         "changed": raw != result,
     }
-    
+
     if output_path:
         Path(output_path).write_text(result, encoding="utf-8")
     elif output["changed"]:
         # 默认覆盖原文件
         Path(file_path).write_text(result, encoding="utf-8")
-    
+
     return output
 
 def detect_density(text: str, threshold_tier2: int = 3, threshold_tier3: int = 1) -> dict:

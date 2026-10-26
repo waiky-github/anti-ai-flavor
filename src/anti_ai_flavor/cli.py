@@ -17,6 +17,8 @@ from pathlib import Path
 
 from .core import rewrite_text, detect_density, detect_all
 from .llm_detector import create_detector
+from .profiles import resolve_profile
+from .profiles.detector import detect_scene
 from .scoring import rewrite_with_report, score_text
 from .watermark import detect_watermark
 from .llm_rewrite import llm_rewrite
@@ -29,7 +31,34 @@ def main():
     # rewrite 子命令
     rewrite_parser = subparsers.add_parser("rewrite", help="重写文本")
     rewrite_parser.add_argument("file", nargs="*", help="输入文件路径（默认 stdin，支持多文件/glob）")
-    rewrite_parser.add_argument("--scene", default="default", help="场景 pack")
+    rewrite_parser.add_argument(
+        "--scene",
+        default="auto",
+        help=(
+            "场景：auto=按文本自动识别（默认，2026-10-26）；"
+            "也可显式指定 social-note / health-content / tech-doc / base，"
+            "旧别名（creative_doc / coder_pr / coder_commit …）仍可用。"
+        ),
+    )
+    rewrite_parser.add_argument(
+        "--no-auto-scene",
+        action="store_true",
+        help="强制按 base 底座处理，跳过场景识别（等价旧版 --scene default）",
+    )
+    rewrite_parser.add_argument(
+        "--gate",
+        action="store_true",
+        help=(
+            "CI 闸门模式：按场景判定的动作分档决定退出码——"
+            "block 退出码 2（拒绝）、warn 退出码 1（需人工看），pass/rewrite 退出码 0。"
+            "warn/block 时不会输出改写结果。"
+        ),
+    )
+    rewrite_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="合规 block 时仍强制改写（默认拒绝改写：改写掩盖不了合规字面问题）",
+    )
     rewrite_parser.add_argument("--output", "-o", help="输出文件（默认 stdout，多文件时忽略）")
     rewrite_parser.add_argument("--diff", action="store_true", help="显示 diff")
     rewrite_parser.add_argument("--strict", action="store_true", help="严格模式：漏掉 Tier 1 词时报错")
@@ -90,6 +119,16 @@ def main():
     check_parser.add_argument("docs_dir", help="文档目录路径")
     check_parser.add_argument("--fix", action="store_true", help="自动 rewrite 需要重写的文件")
 
+    # scene 子命令（2026-10-26: 场景自动识别预览，只读）
+    scene_parser = subparsers.add_parser(
+        "scene", help="预览场景自动识别结果（只读，打印置信度与证据）"
+    )
+    scene_parser.add_argument("file", nargs="?", help="输入文件路径（默认 stdin）")
+    scene_parser.add_argument("--json", action="store_true", help="JSON 输出")
+    scene_parser.add_argument(
+        "--force-scene", default=None, help="不识别，直接查指定场景的 profile 详情"
+    )
+
     # detect 子命令（Phase 2: LLM 检测）
     detect_parser = subparsers.add_parser("detect", help="LLM 检测 AI 味特征（只读，不改写）")
     detect_parser.add_argument("file", nargs="?", help="输入文件路径（默认 stdin）")
@@ -147,7 +186,7 @@ def main():
                     text,
                     base_url=args.llm_base_url,
                     model=args.llm_model,
-                    scene=args.scene,
+                    scene=resolved["scene"],
                     project_context=project_context,
                     project_sections=project_sections,
                 )
@@ -178,7 +217,99 @@ def main():
                 report_dict["llm_model"] = args.llm_model
             return llm_result, report_dict
 
+        # 本次运行生效的场景（多文件时逐文件覆盖；LLM 兜底读这里）
+        resolved = {"scene": "base", "info": None}
+
+        def _resolve_scene_for(raw: str, path: str | None) -> str:
+            """决定本次文本用哪个场景：显式指定 > 自动识别 > base 兜底。
+
+            低置信不硬猜：交互终端下问一句；非交互（管道/CI/网关）下
+            明确提示候选并回落 base，绝不静默按猜测处理。
+            """
+            if args.no_auto_scene or args.scene in ("default", "base"):
+                return "base"
+            if args.scene != "auto":
+                return resolve_profile(args.scene).name
+
+            guess = detect_scene(raw, path)
+            resolved["info"] = guess
+            if not guess.needs_confirmation:
+                print(
+                    f"🎯 场景自动识别: {guess.scene}（置信 {guess.confidence:.2f}）",
+                    file=sys.stderr,
+                )
+                return guess.scene
+
+            cand = guess.guessed_scene
+            if cand and sys.stdin.isatty():
+                try:
+                    answer = input(
+                        f"❓ 场景识别没把握（候选 {cand}，置信 {guess.confidence:.2f}）。"
+                        f"按 {cand} 处理？[y/N] "
+                    )
+                except EOFError:
+                    answer = ""
+                if answer.strip().lower().startswith("y"):
+                    return resolve_profile(cand).name
+                print("ℹ️ 按 base 底座处理", file=sys.stderr)
+                return "base"
+
+            hint = f"，最像 {cand}" if cand else ""
+            print(
+                f"⚠️ 场景识别置信不足（{guess.confidence:.2f}）{hint}：按 base 处理。"
+                f"如需指定请加 --scene <场景>",
+                file=sys.stderr,
+            )
+            return "base"
+
+        def _enforce_action(raw: str, scene: str) -> None:
+            """第 3 层：按场景动作分档决定是改写、只警告还是拒绝。"""
+            sc = score_text(raw, scene=scene)
+            resolved["action"] = sc.action
+            resolved["compliance_hit"] = sc.compliance_hit
+
+            if sc.compliance_hit and not args.force:
+                ids = {h.pattern_id for h in sc.hits
+                       if h.pattern_id in resolve_profile(scene).compliance_patterns}
+                # 跨场景命中的合规红线不在 hits 里（罚分不吃），单列出来，
+                # 否则提示里会出现「（，场景 social-note）」这种空 id。
+                ids.update(sc.details.get("compliance_cross_scene") or [])
+                print(
+                    f"⛔ 合规红线命中（{', '.join(sorted(ids))}，场景 {scene}）：拒绝自动改写。"
+                    f"自动改写掩盖不了字面问题，请人工改。确需改写加 --force。",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+
+            if args.gate:
+                if sc.action == "block":
+                    print(
+                        f"⛔ block（场景 {scene}，分数 {sc.score} ≤ block_at）："
+                        f"机器改不动，交人工。",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                if sc.action == "warn":
+                    print(
+                        f"⚠️ warn（场景 {scene}，分数 {sc.score}）：需人工过一眼，"
+                        f"不输出改写结果。",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+
+            if sc.action == "block":
+                print(
+                    f"⚠️ 分数 {sc.score} 偏低（场景 {scene}，action=block）："
+                    f"改写结果仅供参考，建议人工复核。",
+                    file=sys.stderr,
+                )
+
         def _process_raw(raw: str):
+            # 场景识别 + 动作闸门（2026-10-26 三层架构第 2/3 层）
+            scene = _resolve_scene_for(raw, files[0] if files else None)
+            resolved["scene"] = scene
+            _enforce_action(raw, scene)
+
             # 水印预处理
             if args.watermark:
                 wm_result = detect_watermark(raw, clean=True)
@@ -189,9 +320,9 @@ def main():
 
             # 评分报告
             if args.report:
-                rewritten, report = rewrite_with_report(raw, scene=args.scene)
+                rewritten, report = rewrite_with_report(raw, scene=scene)
             else:
-                rewritten = rewrite_text(raw, scene=args.scene)
+                rewritten = rewrite_text(raw, scene=scene)
                 report = None
 
             # 决定 LLM 兜底策略
@@ -214,7 +345,7 @@ def main():
                         raw,
                         base_url=args.llm_base_url,
                         model=args.llm_model,
-                        scene=args.scene,
+                        scene=scene,
                     )
                     rewritten = llm_result
                     if report is not None:
@@ -295,6 +426,11 @@ def main():
                     "score_before": report["score_before"],
                     "score_after": report["score_after"],
                 }
+                output["scene"] = resolved["scene"]
+                if resolved.get("info") is not None:
+                    output["scene_confidence"] = round(resolved["info"].confidence, 3)
+                output["action"] = resolved.get("action")
+                output["compliance_hit"] = bool(resolved.get("compliance_hit"))
                 if report.get("llm_applied"):
                     output["llm_applied"] = True
                     output["llm_model"] = report["llm_model"]
@@ -330,6 +466,47 @@ def main():
         else:
             print("✅ 密度正常", file=sys.stderr)
             sys.exit(0)
+
+    # scene 子命令
+    elif args.command == "scene":
+        if args.file:
+            raw = Path(args.file).read_text(encoding="utf-8")
+        else:
+            raw = sys.stdin.read()
+
+        if args.force_scene:
+            prof = resolve_profile(args.force_scene)
+            info = {
+                "requested": args.force_scene,
+                "resolved": prof.name,
+                "label": prof.label,
+                "description": prof.description,
+                "policy": prof.policy.to_dict(),
+                "compliance_patterns": list(prof.compliance_patterns),
+                "disabled_patterns": list(prof.disabled_patterns),
+                "extra_patterns": list(prof.extra_patterns),
+                "penalty_overrides": dict(prof.penalty_overrides),
+            }
+        else:
+            info = detect_scene(raw, args.file).to_dict()
+            prof = resolve_profile(info["scene"])
+            info["label"] = prof.label
+            info["policy"] = prof.policy.to_dict()
+            info["compliance_patterns"] = list(prof.compliance_patterns)
+
+        if args.json:
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+        else:
+            print(f"🎯 场景: {info.get('scene')} → {info.get('label') or ''}")
+            if "confidence" in info:
+                print(f"   置信度: {info['confidence']:.2f}"
+                      f"（{'可信' if not info['needs_confirmation'] else '没把握，需追问'}）")
+                if info.get("guessed_scene"):
+                    print(f"   最像: {info['guessed_scene']}")
+                print(f"   证据: {'; '.join(info['evidence']) or '无'}")
+                print(f"   分数: {info['scores']}")
+            print(f"   动作分档: {info['policy']}")
+        sys.exit(0)
 
     # check-docs 子命令
     elif args.command == "check-docs":

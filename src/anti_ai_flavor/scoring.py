@@ -86,6 +86,9 @@ class ScoreResult:
     hits: List[PatternHit] = field(default_factory=list)
     summary: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
+    scene: str = ""  # 生效场景 name（2026-10-26 三层架构第 2 层）
+    action: str = ""  # pass / warn / rewrite / block（第 3 层处置建议）
+    compliance_hit: bool = False  # 合规红线命中（与分数无关，最高优先级）
 
 
 def _count_tier1_hits(text: str) -> List[PatternHit]:
@@ -225,16 +228,27 @@ def _count_lexicon_residual_hits(text: str) -> List[PatternHit]:
     return hits
 
 
-def _count_pattern_hits(text: str) -> List[PatternHit]:
-    """统计 25-pattern 体系的命中情况（只做轻量级正则统计，不执行 fix）。"""
+def _count_pattern_hits(text: str, profile=None) -> List[PatternHit]:
+    """统计 25-pattern 体系的命中情况（只做轻量级正则统计，不执行 fix）。
+
+    2026-10-26：接受 ``profile``（SceneProfile），用于按场景覆盖罚分。
+    缺省 None 时按底座（base）判定，保持旧行为。
+    """
     if not PATTERNS_AVAILABLE:
         return []
+
+    if profile is None:
+        from .profiles import resolve_profile
+        profile = resolve_profile(None)
 
     hits: List[PatternHit] = []
 
     # 按优先级分组
+    # 2026-10-26 修 bug#1：p01 原正则 ``不[仅只]?[^。]*?而[且却]`` 只认
+    # 「不仅…而且」，认不出「不是X，而是Y」——而改写侧 p01 模块抓的正是后者。
+    # 也就是说改写器改得掉、评分器看不见，两套规则漂移。
+    # 现在评分侧直接调用 p01 模块（见下方 p01 段），这条字典只留「不仅…而且」类。
     pattern_groups = [
-        ("p01_not_x_but_y", r"不[仅只]?[^。]*?而[且却][^。]*?"),
         ("p02_one_line_closer", r"总之[^。]*?[。！]"),
         ("p03_staged_runup", r"我们需要[^。]*?[。！]\s*[^。]*?[。！]\s*[^。]*?[。！]"),
         ("p04_arguing_no_one", r"应该说[^。]*?[。！]"),
@@ -243,7 +257,6 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
         # 修复前误报严重：把 "Python、Shell、TCL" 这种技术栈列举也算成 AI 三段式
         # 修复后：要求并列项里至少 1 个是 _ABSTRACT_KEYWORDS 里的抽象词
         ("p05_forced_triads", r"(?:^|[。！？\n])\s*([^。\n]{2,30}?[、，,])\s*([^。\n]{2,30}?[、，,])\s*([^。\n]{2,30}?)[。！\n]"),
-        ("p06_undue_caution", r"可能[^。]*?[。！]"),
         ("p07_artificial_imbalance", r"[^。]*?不仅[^。]*?而且[^。]*?[。！]"),
         ("p08_meta_commentary", r"值得注意的是[^。]*?[。！]"),
         ("p09_false_authority", r"研究表明[^。]*?[。！]"),
@@ -307,41 +320,116 @@ def _count_pattern_hits(text: str) -> List[PatternHit]:
                 note=f"Pattern {pattern_id}",
             ))
 
+    # === p01 覆盖（2026-10-26 修 bug#1）===
+    # 旧正则 ``不[仅只]?[^。]*?而[且却]`` 认不出「不是X，而是Y」——改写侧 p01 模块
+    # 抓的正是后者，于是出现「改写器改得掉、评分器看不见」的规则漂移。
+    # 现在这条覆盖统一由检测型 pattern ``p33_contrastive_negation`` 承担
+    # （它的正则集是 p01 的超集：还收「没…而是」「都是/只是/只有」反转），
+    # 所以这里**不再重复扫描 p01 模块**——两处都扫会让同一句被扣两次分。
+    # 见 _count_extended_hits() 与 patterns/p33_contrastive_negation.py。
+
+    # === p06 覆盖（2026-10-26 修 bug#3）===
+    # 旧正则 ``可能[^。]*?[。！]`` 与 p06 模块语义不符：模块抓的是「有人可能会说 /
+    # 有观点认为 / 诚然 / 毋庸置疑」这类**缓冲句式**，旧正则却把任何含「可能」的
+    # 句子都算 AI 味——「可能是猫癣」「有可能是过敏」在小红书/健康内容里会被大面积
+    # 误伤（实测正文 3 处误命中）。现在改为直接调用模块 match()，改写/评分同源。
+    try:
+        from .patterns.p06_undue_caution import match as _p06_match
+    except ImportError:
+        _p06_match = None
+    if _p06_match is not None:
+        for m in _p06_match(text):
+            hits.append(PatternHit(
+                category="pattern",
+                pattern_id="p06_undue_caution",
+                matched_text=m.matched_text,
+                penalty=2,
+                note="Pattern p06_undue_caution（过度谨慎缓冲句）",
+            ))
+
     # p27 过度口语化（2026-10-09）：复用 p27 词表与豁免逻辑，硬/轻信号差别罚分
+    # 2026-10-26：罚分走 profile —— 表达类内容里口语是正常语域（social-note 覆盖为 0）
     try:
         from .patterns.p27_over_colloquial import assess as _p27_assess
     except ImportError:
         _p27_assess = None
     if _p27_assess is not None:
         verdict = _p27_assess(text)
+        hard_penalty = profile.penalty_for("p27_over_colloquial", 3)
+        light_penalty = profile.penalty_for("p27_over_colloquial", 1)
         for w in verdict["hard_hits"]:
             hits.append(PatternHit(
                 category="pattern",
                 pattern_id="p27_over_colloquial",
                 matched_text=w,
-                penalty=3,
+                penalty=hard_penalty,
                 note="网络烂梗/轻佻指代（硬信号）",
             ))
         # 轻信号仅在达到 warn 密度后才计少量罚分（正常口语不扣）
-        if verdict["severity"] in ("warn", "rewrite"):
+        if verdict["severity"] in ("warn", "rewrite") and light_penalty > 0:
             for w in verdict["light_hits"]:
                 hits.append(PatternHit(
                     category="pattern",
                     pattern_id="p27_over_colloquial",
                     matched_text=w,
-                    penalty=1,
+                    penalty=light_penalty,
                     note="口语化（轻信号）",
                 ))
 
     return hits
 
 
-def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreResult:
+def _count_extended_hits(text: str, profile) -> List[PatternHit]:
+    """检测型 pattern（p28+）打分（2026-10-26 新增）。
+
+    与 p01–p27 的差别：这些 pattern 没有 ``fix()``，只提供判定。它们抓的是
+    「语域味道」（身体反应修辞、格言金句、表演式坦诚、模板化枚举、对比否定、
+    破折号、绝对化用语），机器改写要么丢人味、要么换个更假的说法，
+    所以正确处置是扣分 + 交场景策略（warn / block / LLM 重写）。
+
+    罚分走 ``profile.penalty_for()``，未覆盖时按 pattern 自身 penalty。
+    """
+    from .profiles import activate_patterns
+
+    hits: List[PatternHit] = []
+    for pattern in activate_patterns(profile):
+        penalty = profile.penalty_for(pattern.pattern_id, pattern.penalty)
+        if penalty <= 0:
+            continue
+        for m in pattern.scan(text):
+            hits.append(PatternHit(
+                category="pattern",
+                pattern_id=pattern.pattern_id,
+                matched_text=m.matched_text,
+                penalty=penalty,
+                note=pattern.note or pattern.description,
+            ))
+    return hits
+
+
+def score_text(
+    text: str,
+    *,
+    weights: Optional[Dict[str, int]] = None,
+    scene: Optional[str] = None,
+) -> ScoreResult:
     """
     对文本进行 AI 味评分，返回 0-100 分（越高越好）。
 
     weights 可选：覆盖各类 penalty 权重。
+
+    scene 可选：场景 name 或别名（``social-note`` / ``health-content`` / ``tech-doc``
+    以及 ``xiaohongshu`` / ``coder_pr`` 这类旧别名）。不传或认不出 → 底座 base。
+    场景决定三件事（2026-10-26 三层架构的「判定」层）：
+
+      1. 哪些检测型 pattern 生效（``activate_patterns``）
+      2. 每条 pattern 的罚分（``profile.penalty_for``）
+      3. 命中后该做什么（``profile.policy`` → rewrite / warn / block，阶段 3 消费）
     """
+    from .profiles import resolve_profile_for_text
+
+    profile = resolve_profile_for_text(scene, text)
+
     if weights is None:
         weights = {
             "tier1_zh": 5,
@@ -362,7 +450,8 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
     all_hits.extend(_count_tier1_hits(text))
     all_hits.extend(_count_legacy_hits(text))
     all_hits.extend(_count_lexicon_residual_hits(text))
-    all_hits.extend(_count_pattern_hits(text))
+    all_hits.extend(_count_pattern_hits(text, profile))
+    all_hits.extend(_count_extended_hits(text, profile))
 
     raw_penalty = sum(h.penalty for h in all_hits)
 
@@ -408,6 +497,8 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
     prof_result = compute_professionalism(text)
 
     details = {
+        "scene": profile.name,
+        "scene_label": profile.label,
         "raw_penalty": raw_penalty,
         "norm_penalty": round(norm_penalty, 2),
         "hit_count": len(all_hits),
@@ -417,12 +508,34 @@ def score_text(text: str, *, weights: Optional[Dict[str, int]] = None) -> ScoreR
         "professionalism": prof_result.to_dict(),
     }
 
+    # 处置动作（2026-10-26 三层架构第 3 层）：
+    # 合规红线命中无视分数直接 block —— 监管看的是字面，没有「分数还行」这种说法。
+    compliance_hit = any(
+        h.pattern_id in profile.compliance_patterns for h in all_hits
+    )
+    # 跨场景兜底（2026-10-26）：场景识别可能判成 base，合规红线不能因此漏放。
+    # 只要文本在本领域（domain_markers 命中），就把该场景的合规则一并判。
+    cross_reasons: list[tuple[str, str]] = []
+    if not compliance_hit:
+        try:
+            from .profiles import cross_domain_compliance
+            cross_reasons = cross_domain_compliance(text, profile)
+        except Exception:
+            cross_reasons = []
+        compliance_hit = bool(cross_reasons)
+        if compliance_hit:
+            details["compliance_cross_scene"] = [pid for pid, _ in cross_reasons]
+    action = profile.policy.decide(score, compliance_hit=compliance_hit)
+
     return ScoreResult(
         score=score,
         raw=raw_penalty,
         hits=all_hits,
         summary=summary,
         details=details,
+        scene=profile.name,
+        action=action,
+        compliance_hit=compliance_hit,
     )
 
 
@@ -440,8 +553,9 @@ def rewrite_with_report(text: str, scene: str = "default") -> Tuple[str, Dict[st
       })
     """
     rewritten = rewrite_text(text, scene=scene)
-    score_before = score_text(text)
-    score_after = score_text(rewritten)
+    # 2026-10-26：评分也要带场景——否则改写按场景、评分按底座，两边口径不一致
+    score_before = score_text(text, scene=scene)
+    score_after = score_text(rewritten, scene=scene)
 
     report = {
         "original": text,

@@ -64,6 +64,12 @@ _DEFAULTS: Dict[str, Any] = {
     # 链接容易自由发挥，且这类回复用户对延迟敏感）。只在 async_edit 模式于后台
     # 判定；sync 模式仍走原逻辑（由 protected_tokens 校验兜底）。
     "skip_code_for_llm": True,
+    # 场景识别（2026-10-26 三层架构）：auto=按文本内容自动判场景选口径；
+    # 也可写死 social-note / health-content / tech-doc / base。
+    "scene": "auto",
+    # 合规闸门：命中「根治/消炎/免去医院」等字面红线时，网关不改写、原样发出，
+    # 只记 warning 日志（自动改写掩盖不了合规问题，工具不替用户背锅）。
+    "respect_compliance": True,
 }
 
 
@@ -134,23 +140,40 @@ def _contains_structured_content(text: str) -> bool:
         return "```" in (text or "")
 
 
-def _rules_score(text: str) -> Optional[int]:
+def _rules_score(text: str, scene: str = "base") -> Optional[int]:
     """rules-only 评分；导入失败/异常返回 None（调用方按放行处理）。"""
+    result = _rules_assess(text, scene)
+    if result is None:
+        return None
+    score = getattr(result, "score", None)
+    return int(score) if score is not None else None
+
+
+def _rules_assess(text: str, scene: str = "base"):
+    """完整 rules 判定（分数 + 动作 + 合规命中）。拿不到引擎返回 None。"""
     try:
         from anti_ai_flavor.scoring import score_text
-        result = score_text(text)
-        score = getattr(result, "score", None)
-        return int(score) if score is not None else None
+        return score_text(text, scene=scene)
     except Exception as exc:
-        logger.warning("flavor_hook: rules 评分失败，放行原文: %s", exc)
+        logger.warning("flavor_hook: rules 判定失败，按放行处理: %s", exc)
         return None
 
 
-def _rules_rewrite(text: str) -> Optional[str]:
+def _detect_scene_for(text: str) -> str:
+    """自动识别场景；识别器不可用或异常一律回落 base（底座最保守）。"""
+    try:
+        from anti_ai_flavor.profiles.detector import detect_scene
+        return detect_scene(text).scene
+    except Exception as exc:
+        logger.debug("flavor_hook: 场景识别失败，按 base 处理: %s", exc)
+        return "base"
+
+
+def _rules_rewrite(text: str, scene: str = "base") -> Optional[str]:
     """纯 rules 改写（0 token）。导入失败/异常返回 None。"""
     try:
         from anti_ai_flavor.core import rewrite_text
-        return rewrite_text(text)
+        return rewrite_text(text, scene=scene)
     except Exception as exc:
         logger.warning("flavor_hook: rules 改写失败: %s", exc)
         return None
@@ -226,6 +249,7 @@ async def _llm_rewrite_via_transport(
     max_chunk_chars: int,
     transport,
     max_attempts: int = 3,
+    scene: str = "default",
 ) -> str:
     """通过注入的宿主 transport 异步改写。
 
@@ -241,6 +265,9 @@ async def _llm_rewrite_via_transport(
                 text,
                 transport=transport,
                 max_chunk_chars=max_chunk_chars,
+                # 2026-10-26 修：场景必须带到改写层，否则只有评分按场景走，
+                # 改写的 pattern 预清洗与场景 prompt 增量都退回 default。
+                scene=scene,
             )
         except RuntimeError as exc:
             if "剥离 thinking 块后为空" not in str(exc):
@@ -259,6 +286,7 @@ def _llm_rewrite_sync(
     max_chunk_chars: int,
     api_key: str,
     max_attempts: int = 3,
+    scene: str = "default",
 ) -> str:
     """在线程中执行的 LLM 改写。异常向上抛，由调用方兜底。
 
@@ -274,6 +302,7 @@ def _llm_rewrite_sync(
                 text,
                 api_key=api_key,
                 max_chunk_chars=max_chunk_chars,
+                scene=scene,
             )
         except RuntimeError as exc:
             if "剥离 thinking 块后为空" not in str(exc):
@@ -303,6 +332,37 @@ async def _run_full_pipeline(original: str, cfg: Dict[str, Any]) -> str:
     if not text:
         return original
 
+    # 场景识别（2026-10-26 三层架构第 2 层）：网关出口文本按内容判场景，
+    # 只用于选评分/改写口径，不改变「改不改」的判定门槛。
+    configured_scene = str(cfg.get("scene") or "auto")
+    scene = _detect_scene_for(text) if configured_scene == "auto" else configured_scene
+
+    # 合规闸门（第 3 层）：命中监管字面红线时不改写、原样发出并留日志。
+    # 理由同 CLI —— 自动改写掩盖不了合规问题，工具不该替用户背这口锅。
+    if cfg.get("respect_compliance", True):
+        assessed = _rules_assess(text, scene)
+        if assessed is not None and getattr(assessed, "compliance_hit", False):
+            # 只列「真正触发合规判定」的 pattern id。此前直接打全部 hits，导致
+            # 日志里出现 p27_over_colloquial 之类与合规无关的条目（实测误导排障）。
+            from .profiles import resolve_profile_for_text
+
+            try:
+                comp_ids = set(resolve_profile_for_text(scene, text).compliance_patterns)
+            except Exception:
+                comp_ids = set()
+            ids: set[str] = set()
+            for _h in assessed.hits:
+                _pid = getattr(_h, "pattern_id", None)
+                if isinstance(_pid, str) and _pid in comp_ids:
+                    ids.add(_pid)
+            details = getattr(assessed, "details", None) or {}
+            ids |= set(details.get("compliance_cross_scene") or ())
+            logger.warning(
+                "flavor_hook: 合规红线命中（场景 %s，%s），不改写、原样发出",
+                scene, ", ".join(sorted(ids)) or "cross-domain",
+            )
+            return original
+
     # —— 关键顺序：先短语改写，再评分 ——
     # gating 评分器与短语表是两套词表：评分器只认识「生态/闭环/全方位…」等
     # 强信号，而「拉齐颗粒度/组合拳/品效合一」等会议黑话它不扣分（会给 100）。
@@ -324,7 +384,7 @@ async def _run_full_pipeline(original: str, cfg: Dict[str, Any]) -> str:
 
     # 需要评分的文本：有有效改写则评产物，否则评规范化原文。
     candidate = rules_out or text
-    score = _rules_score(candidate)
+    score = _rules_score(candidate, scene)
     if score is not None and score >= int(cfg["pass_score"]):
         if rules_out:
             logger.info(
@@ -362,7 +422,8 @@ async def _run_full_pipeline(original: str, cfg: Dict[str, Any]) -> str:
             # fallback、读 auxiliary.flavor 覆盖；无需本模块自读 key。
             rewritten = await asyncio.wait_for(
                 _llm_rewrite_via_transport(
-                    llm_input, int(cfg["llm_max_chunk_chars"]), transport
+                    llm_input, int(cfg["llm_max_chunk_chars"]), transport,
+                    scene=scene,
                 ),
                 timeout=float(cfg["llm_timeout"]),
             )
@@ -380,6 +441,7 @@ async def _run_full_pipeline(original: str, cfg: Dict[str, Any]) -> str:
                     llm_input,
                     int(cfg["llm_max_chunk_chars"]),
                     api_key,
+                    scene=scene,
                 ),
                 timeout=float(cfg["llm_timeout"]),
             )
@@ -411,7 +473,7 @@ async def _run_full_pipeline(original: str, cfg: Dict[str, Any]) -> str:
     #   1) 结果再评分达标 → 直接采用（长度无关）
     #   2) 结果极短（< min_keep_chars 或不到原文 30%）→ 疑似截断，发原文
     #   3) 长度合理 → 采用，避免因评分器保守而拒绝有效改写
-    new_score = _rules_score(rewritten)
+    new_score = _rules_score(rewritten, scene)
     if new_score is not None and new_score >= int(cfg["pass_score"]):
         logger.info(
             "flavor_hook: LLM 改写后分数 %d ≥ %d，采用（%d → %d chars）",

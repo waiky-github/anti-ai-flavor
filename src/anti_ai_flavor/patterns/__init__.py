@@ -50,6 +50,48 @@ from .p25_vagueness_by_design import match as p25_match, fix as p25_fix
 from .p26_mixed_code_switching import match as p26_match, fix as p26_fix
 from .p27_over_colloquial import match as p27_match, fix as p27_fix, assess as p27_assess
 
+# === 检测型 pattern（p28+，2026-10-26 场景感知改造）===
+# 与 p01–p27 的改写型不同：只有 match()，没有 fix()。
+# 定位见 patterns/_extended.py 模块 docstring。
+from .p28_body_reaction import PATTERN as P28_BODY_REACTION
+from .p29_maxim_golden_line import PATTERN as P29_MAXIM_GOLDEN_LINE
+from .p30_staged_candor import PATTERN as P30_STAGED_CANDOR
+from .p31_rhetorical_identity import PATTERN as P31_RHETORICAL_IDENTITY
+from .p32_template_enumeration import PATTERN as P32_TEMPLATE_ENUMERATION
+from .p33_contrastive_negation import PATTERN as P33_CONTRASTIVE_NEGATION
+from .p34_em_dash_abuse import PATTERN as P34_EM_DASH_ABUSE
+from .p35_medical_claim import PATTERN as P35_MEDICAL_CLAIM
+from .p36_absolute_claim import PATTERN as P36_ABSOLUTE_CLAIM
+from .p37_replace_doctor import PATTERN as P37_REPLACE_DOCTOR
+from .p38_vague_elevation import PATTERN as P38_VAGUE_ELEVATION
+from .p39_three_part_parallelism import PATTERN as P39_THREE_PART_PARALLELISM
+from .p40_marketing_hype import PATTERN as P40_MARKETING_HYPE
+
+# 基础检测型 pattern 注册表：所有场景默认生效（scene="base"）
+BASE_EXTENDED_PATTERNS = [
+    P28_BODY_REACTION,
+    P29_MAXIM_GOLDEN_LINE,
+    P30_STAGED_CANDOR,
+    P31_RHETORICAL_IDENTITY,
+    P33_CONTRASTIVE_NEGATION,
+    P34_EM_DASH_ABUSE,
+    P36_ABSOLUTE_CLAIM,
+    P38_VAGUE_ELEVATION,
+    P39_THREE_PART_PARALLELISM,
+]
+
+# 场景专属 pattern：只在声明了对应场景时生效
+SCENE_EXTENDED_PATTERNS = [
+    P32_TEMPLATE_ENUMERATION,  # 表达类/健康内容；技术文档的枚举是正常结构
+    P35_MEDICAL_CLAIM,         # health-content 专属，合规红线
+    P37_REPLACE_DOCTOR,        # health-content 专属，合规红线
+    P40_MARKETING_HYPE,        # 表达类/健康内容；技术文档的「性能拉满」不归它管
+]
+
+ALL_EXTENDED_PATTERNS = BASE_EXTENDED_PATTERNS + SCENE_EXTENDED_PATTERNS
+
+EXTENDED_PATTERN_BY_ID = {p.pattern_id: p for p in ALL_EXTENDED_PATTERNS}
+
 __all__ = [
     "TIER1_ZH", "TIER1_EN",
     "p01_match", "p01_fix",
@@ -79,4 +121,6 @@ __all__ = [
     "p25_match", "p25_fix",
     "p26_match", "p26_fix",
     "p27_match", "p27_fix", "p27_assess",
+    "BASE_EXTENDED_PATTERNS", "SCENE_EXTENDED_PATTERNS",
+    "ALL_EXTENDED_PATTERNS", "EXTENDED_PATTERN_BY_ID",
 ]

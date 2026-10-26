@@ -196,14 +196,59 @@ def _build_user_prompt(
     return "\n".join(parts)
 
 
+# 场景化 prompt 增量（2026-10-26 第 4 阶段）
+#
+# 为什么要有这个：SYSTEM_PROMPT 是给简历/技术方案调好的「资深工程师准正式口吻」，
+# 小红书笔记 / 健康科普拿去用会直接把口语叙事改成技术汇报——v3 那版「AI 味儿很浓」
+# 的根因之一就是这个口吻错配。base 保持原样（几十个既有测试和简历场景都依赖它），
+# 非技术场景只追加一段覆盖指令，优先级声明高于上方通用口吻。
+SCENE_PROMPT_DELTAS: Dict[str, str] = {
+    "social-note": """【场景覆盖：社交笔记（小红书/朋友圈）】本节优先级高于上方全部口吻要求。
+- 用当事人第一人称讲刚发生的事，不要技术作者/简历/方案文口吻
+- 短句、口语，允许语气词；不要小标题、不要分点罗列、不要总结段
+- 原文已有的个人细节（时间、地点、价格、动作、对白原话、具体数字）一个都不能删、不能改写成书面词
+- 不要加「希望对你有帮助」「姐妹们」「建议收藏」这类平台套话
+- 长度与原文偏差 ±10%，禁止扩写、禁止补背景叙事
+""",
+    "health-content": """【场景覆盖：健康/医疗相关文本】本节优先级高于上方全部口吻要求。
+- 只做描述与经验陈述，不做诊断结论：不写「就是 XX 病」「一定是」
+- 禁止任何功效宣称：根治 / 治好 / 有效 / 消炎 / 抗菌 / 抗真菌 / 杀菌 / 除螨 / 100%
+- 不替代专业建议：原文若出现「建议就诊」「以医生为准」「AI 只做筛查」这类措辞必须逐字保留
+- 药物、用量、疗程只在原文明确写了的情况下保留，禁止自行补充
+- 不确定的地方保持原文的不确定语气，禁止用肯定句替换
+""",
+}
+
+
+def _scene_delta(scene: str, text: str = "") -> str:
+    """按场景取 prompt 增量；认不出/无增量返回空串（回落 base 技术口吻）。
+
+    scene="auto" 时按 text 识别场景（2026-10-26），不再静默回落 base。
+    """
+    if not scene:
+        return ""
+    try:
+        from .profiles import resolve_profile_for_text
+
+        name = resolve_profile_for_text(scene, text).name
+    except Exception:  # noqa: BLE001 - 场景解析失败不应阻塞改写
+        name = str(scene)
+    return SCENE_PROMPT_DELTAS.get(name, "")
+
+
 def _build_messages(
     text: str,
     project_context: Optional[str] = None,
     project_sections: Optional[Dict[str, str]] = None,
+    scene: str = "default",
 ) -> List[Dict[str, str]]:
     """构造单次调用的 messages（system + user）。transport 无关。"""
+    system = SYSTEM_PROMPT
+    delta = _scene_delta(scene, text)
+    if delta:
+        system = f"{system}\n\n{delta}"
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": _build_user_prompt(text, project_context, project_sections)},
     ]
 
@@ -248,9 +293,10 @@ def _llm_call_once(
     timeout: float,
     project_context: Optional[str] = None,
     project_sections: Optional[Dict[str, str]] = None,
+    scene: str = "default",
 ) -> str:
     """单段 LLM 调用（默认 OpenAI 直连）：构造 prompt → 调 API → 剥 thinking。"""
-    messages = _build_messages(text, project_context, project_sections)
+    messages = _build_messages(text, project_context, project_sections, scene=scene)
     transport = _default_openai_transport_factory(
         api_key, base_url, model, temperature, max_tokens, timeout
     )
@@ -320,11 +366,12 @@ async def _rewrite_chunks_async(
     transport: LLMTransport,
     project_context: Optional[str],
     project_sections: Optional[Dict[str, str]],
+    scene: str = "default",
 ) -> str:
     """对每段走注入 transport（可同步可异步），剥 thinking，空行拼接。"""
     rewritten: List[str] = []
     for chunk in chunks:
-        messages = _build_messages(chunk, project_context, project_sections)
+        messages = _build_messages(chunk, project_context, project_sections, scene=scene)
         content = await _run_transport(transport, messages)
         clean = _strip_thinking(content)
         if not clean:
@@ -379,6 +426,7 @@ async def llm_rewrite_async(
         transport=transport,
         project_context=project_context,
         project_sections=project_sections,
+        scene=scene,
     )
 
 

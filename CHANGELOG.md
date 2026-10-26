@@ -6,6 +6,72 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.18] - 2026-10-26
+
+把「人写 + 反复打回重写」的 9 版经验固化成可复用判定体系：检测、判定、处置、改写四层拆开，检测层只管「有没有 AI 味」，判定层按场景决定扣多少分，处置层给出 pass / warn / rewrite / block 四档动作，改写层兜底。核心目的是让这个库能当发布前的强制闸门用，而不是只能事后打分。
+
+> 记录缺口：0.2.16、0.2.17 两次版本号 bump 没有留下 CHANGELOG 条目，本版一并说明，历史细节待补。
+
+### Added
+
+#### 1. 12 个新 pattern（p28-p40）
+
+p28 身体反应、p29 金句收尾、p30 分阶段坦白、p31 假身份代入、p32 模板枚举、p33 对比否定、p34 破折号滥用、p35 医疗功效、p36 绝对化用语、p37 替代医生、p38 空洞升华、p39 三段排比、p40 营销话术。pattern 总数 25 → 40。
+
+#### 2. `profiles/` 场景判定包
+
+- `base`：只覆盖任何场景都不该出现的表达（85/70/55）
+- `social-note`：小红书语域，口语化 p27 不扣分，模板枚举与营销话术计入（85/68/50）
+- `health-content`：医疗合规口径，p35/p37 为合规红线，跨场景也拦（90/75/65）
+- `tech-doc`：允许必要枚举与命令（85/70/55）
+
+`ActionPolicy.decide` 按分数带出动作；合规命中无视分数直接 block。
+
+#### 3. 场景识别器 `detect_scene`
+
+按语域特征打分并给出证据链，实测小红书样本文本置信度 0.92-0.97，证据形如 `emoji +2.0 / 第一人称叙事 +2.0 / 亲历动作 +1.0`。
+
+#### 4. CLI `scene` 子命令 + 闸门模式
+
+- `anti-ai-flavor scene note.md`：只读预览识别结果
+- `rewrite --scene auto`（默认）/ `--no-auto-scene` / `--gate` / `--force`
+- gate 模式退出码：block → 2（且不输出改写）、warn → 1、pass/rewrite → 0
+
+#### 5. 场景化 LLM prompt 增量
+
+`SCENE_PROMPT_DELTAS` 按场景注入；实测 auto 分支 system prompt 2003 字符 vs base 1788 字符。
+
+### Fixed
+
+#### 1. 改写把段落全压平（15 段变 4 段）
+
+根因两处：`_cleanup_residue` 里 `re.sub(r"[\s]+", " ", text)` 折叠所有空白；标点后合并规则用 `\s+` 把换行也吃掉。修法：入口把段落分隔与段内断行换成私用区哨兵、出口原样还原，合并规则改为只吃空格与制表符 `[ \t]+`。修复后 v3/v5/v8/v9 四个版本改写均逐字幂等，段数行数零变化。
+
+#### 2. 库 API `scene="auto"` 静默回落 base
+
+`resolve_profile("auto")` 认不出 `auto` 这个 key，悄悄用 base 判定，导致同一文本 CLI 判 32 分 block、库判 44 分 block，且无从发现。新增 `resolve_profile_for_text(scene, text)` 真跑场景识别；未知场景名改为发 `RuntimeWarning` 并列出可用场景，杜绝静默 fallback。
+
+#### 3. 网关合规日志打印无关 pattern
+
+合规闸门命中时日志把全部 hits 都列为原因，实测出现 `p27_over_colloquial` 这种与合规无关的条目，排障会被带偏。改为只列真正触发合规判定的 pattern id（含跨场景判定结果）。
+
+#### 4. 测试隔离：34 个用例连锁失败
+
+两个测试文件的 `_run` 辅助函数用 `asyncio.get_event_loop()`，同进程内先跑过 `asyncio.run` 的用例会把线程 current loop 置空，后续抛 `RuntimeError: There is no current event loop`。改为统一用 `asyncio.run`。
+
+### Changed
+
+- `__all__` 补上 `resolve_profile_for_text`、`cross_domain_compliance`（此前导出缺失，静态检查报 unknown import symbol）
+- README 删掉已废弃的「仅 golden_set.json 白名单输入可改写」段，改为四层架构 / 场景表 / 动作分档 / `--gate` 用法；白名单行为仍在，但默认关闭，需显式 `whitelist_strict=True` 开启
+
+### 测试覆盖
+
+`pytest tests/ -q` → 380 passed。新增 10 个测试文件，覆盖场景 profile、场景识别器、动作分档、网关场景接线、网关合规闸门、LLM 场景 prompt 增量、空白保真、pattern 缺口、库 API auto 语义。
+
+验收脚本 `scripts/acceptance_scene_2026_10_26.py`：对抗样本 13/13 命中、负样本 10/10 零命中、版本分数 32 → 85 → 100 → 100 单调。
+
+---
+
 ## [0.2.15] - 2026-09-30
 
 v0.2.13/14 prompt 加「准正式技术写作」后实测发现：LLM 把 v8 简历段 845 字扩写到 988-1021 字（+11~21%），违背「不发明事实」原则。「补项目落地叙事」原条款鼓励扩写，与长度目标冲突。
