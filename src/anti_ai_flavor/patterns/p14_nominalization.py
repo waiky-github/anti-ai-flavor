@@ -11,10 +11,13 @@ import re
 from typing import List
 
 ZH_PATTERNS = [
-    (r"进行(?:优化|改进|调整|改革|升级|部署|实施|检查)", lambda m: re.search(r"进行(.+)", m.group()).group(1)),
-    (r"做出(?:决定|选择|判断|贡献|努力)", lambda m: re.search(r"做出(.+)", m.group()).group(1)),
-    (r"加以(?:考虑|分析|优化|改进)", lambda m: re.search(r"加以(.+)", m.group()).group(1)),
-    (r"予以(?:支持|考虑|处理|解决)", lambda m: re.search(r"予以(.+)", m.group()).group(1)),
+    # 捕获组直接取动词，避免对 re.search(...) 的返回值再解引用
+    # （原写法靠 lambda 里二次 search + .group(1)，静态上可能为 None，
+    #  运行时靠外层 try/except 兜底，属脆弱写法）
+    (r"进行(优化|改进|调整|改革|升级|部署|实施|检查)", lambda m: m.group(1)),
+    (r"做出(决定|选择|判断|贡献|努力)", lambda m: m.group(1)),
+    (r"加以(考虑|分析|优化|改进)", lambda m: m.group(1)),
+    (r"予以(支持|考虑|处理|解决)", lambda m: m.group(1)),
 ]
 
 EN_PATTERNS = [

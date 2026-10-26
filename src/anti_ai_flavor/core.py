@@ -9,6 +9,14 @@ import re
 import sys
 from pathlib import Path
 
+# pyright: reportPossiblyUnboundVariable=false
+# 原因（非代码缺陷，静态分析噪声）：下面 27 个 pattern 的 match/fix 以及
+# LEGACY_TIER1_ZH/_EN 全部在 try/except ImportError 块内导入。导入失败时
+# PATTERNS_AVAILABLE=False，rewrite_text() 入口（本文件第一步）直接
+# return _legacy_rewrite()，所有使用点都在该守卫之后，运行时不可能触达
+# 未绑定名。pyright 不做「模块级 flag + 跨函数早退」的流分析，故此处逐名字
+# 报 possibly-unbound 属误报；本文件级指令只关这一条规则，其余照报。
+
 # === Phase 1：25-pattern 体系 ===
 try:
     from .patterns import TIER1_ZH as LEGACY_TIER1_ZH, TIER1_EN as LEGACY_TIER1_EN
@@ -42,6 +50,11 @@ try:
     PATTERNS_AVAILABLE = True
 except ImportError:
     PATTERNS_AVAILABLE = False
+    # 显式兜底：pattern 包导入失败时这两个模块级常量也要有绑定值，
+    # 否则下游 `LEGACY_TIER1_ZH + LEGACY_TIER1_EN` 是 Unbound 运算
+    # （静态报 reportOperatorIssue，运行时靠入口早退才没崩）。
+    LEGACY_TIER1_ZH: list[str] = []
+    LEGACY_TIER1_EN: list[str] = []
 
 # === Phase 2：LLM 检测器（可选） ===
 try:
@@ -851,7 +864,7 @@ def auto_detect_scene(file_path: str, content: str = "") -> str:
     return detect_scene(content, file_path or None).scene
 
 
-def rewrite_file_with_auto_scene(file_path: str, output_path: str = None) -> dict:
+def rewrite_file_with_auto_scene(file_path: str, output_path: str | None = None) -> dict:
     """自动识别场景并重写文件。
 
     返回: {

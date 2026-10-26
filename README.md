@@ -122,6 +122,14 @@ print(r.scene, r.score, r.action, r.compliance_hit)
 pytest tests/ -v
 ```
 
+静态类型检查（standard 模式，比默认 basic 严）：
+
+```bash
+npx --yes pyright src tests
+```
+
+基线 0 error / 0 warning。`pyrightconfig.json` 固定了 venv 与检查范围；`core.py` 里的 27 个 pattern 在 `try/except ImportError` 内导入，使用点都在 `PATTERNS_AVAILABLE` 守卫之后，这批静态噪声已在文件头标注原因，没有全局关规则。
+
 ## License
 
 MIT

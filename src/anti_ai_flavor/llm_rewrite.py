@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Awaitable, Callable, Dict, List, Optional, Union
+from inspect import isawaitable
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, cast
 
 from .core import rewrite_text
 from .dedup import deduplicate_text
@@ -256,8 +257,12 @@ def _build_messages(
 def _default_openai_transport_factory(
     api_key: str, base_url: str, model: str,
     temperature: float, max_tokens: int, timeout: float,
-) -> LLMTransport:
-    """构造默认的 OpenAI 直连同步 transport（CLI / 独立场景）。"""
+) -> Callable[[List[Dict[str, str]]], str]:
+    """构造默认的 OpenAI 直连同步 transport（CLI / 独立场景）。
+
+    返回类型精确到同步签名（不用宽的 LLMTransport = str | Awaitable[str]），
+    调用方 ``_llm_call_once`` 才能静态确认拿到的是 str 而非 awaitable。
+    """
     try:
         from openai import OpenAI
     except ImportError as e:
@@ -271,13 +276,20 @@ def _default_openai_transport_factory(
         try:
             resp = client.chat.completions.create(
                 model=model,
-                messages=messages,
+                # messages 是 OpenAI 兼容形状；openai>=1 该形参用 TypedDict
+                # 联合类型校验，静态不认 Dict[str, str]，运行时无差异。
+                messages=cast(Any, messages),
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
         except Exception as e:
             raise RuntimeError(f"LLM rewrite 调用失败: {e}") from e
-        return resp.choices[0].message.content
+        # content 在 openai 类型里是 str | None（tool_calls 场景为 None），
+        # 显式判空比把 None 直接返回给上层更早暴露问题。
+        content = resp.choices[0].message.content
+        if content is None:
+            raise RuntimeError("LLM rewrite 返回空内容")
+        return content
 
     return _transport
 
@@ -312,7 +324,11 @@ def _llm_call_once(
 async def _run_transport(transport: LLMTransport, messages: List[Dict[str, str]]) -> str:
     """调 transport，透明支持同步返回 str 或异步返回 awaitable。"""
     result = transport(messages)
-    if hasattr(result, "__await__"):
+    # 用 isawaitable 而非 hasattr(result, "__await__")：语义等价
+    # （collections.abc.Awaitable 的 __subclasshook__ 也查 __await__），
+    # 但 pyright 认 isawaitable 的类型收窄，能正确把 Union[str, Awaitable[str]]
+    # 收成 Awaitable[str]，避免「str 不可 await」的误报。
+    if isawaitable(result):
         result = await result
     if not result:
         raise RuntimeError("LLM rewrite 返回空内容")

@@ -80,7 +80,9 @@ def _load_config_yaml() -> Dict[str, Any]:
     """
     try:
         import yaml
-        from hermes_cli.config import get_hermes_home
+        # hermes_cli 属 Hermes Agent 宿主侧模块，本包独立安装时不存在，
+        # 已在 try/except 兜底（失败返回 {}），故静态缺模块不算缺陷。
+        from hermes_cli.config import get_hermes_home  # pyright: ignore[reportMissingImports]
         path = get_hermes_home() / "config.yaml"
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
@@ -192,7 +194,8 @@ def _read_env_file_key(var_name: str) -> Optional[str]:
     取主 provider 使用的同一把 key。只读、不打印明文。
     """
     try:
-        from hermes_constants import get_hermes_home
+        # hermes_constants 同样属宿主侧模块，独立安装时缺席（已 try/except 兜底）。
+        from hermes_constants import get_hermes_home  # pyright: ignore[reportMissingImports]
         candidates = [
             get_hermes_home() / ".env",
             get_hermes_home().parent / ".env",

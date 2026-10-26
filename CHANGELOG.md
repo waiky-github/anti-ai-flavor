@@ -6,6 +6,47 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [0.2.19] - 2026-10-26
+
+引入 pyright standard 模式的静态类型基线：检查从 68 条降到 0 error / 0 warning。68 条里 13 条是真类型契约问题（改了代码），55 条是 pyright 对 `try/except ImportError` 内导入的跨函数流分析盲区（按原因标注，不关全局规则掩盖）。
+
+### Fixed
+
+#### 1. p14 名词化 pattern 靠异常兜底取词
+
+四个中文 pattern 用 `re.search(r"进行(.+)", m.group()).group(1)` 二次匹配取动词，静态上可能返回 None，运行时全靠外层 `try/except Exception` 兜住。改为 pattern 直接带捕获组 `进行(优化|改进|...)` 配 `m.group(1)`，语义等价且不再有 Optional 解引用。
+
+#### 2. `rewrite_file_with_auto_scene` 默认值类型与实际用途不符
+
+`output_path: str = None`，但函数体内 `if output_path:` 明确允许不传。改为 `str | None`。
+
+#### 3. LLM transport 的类型契约宽于实现
+
+`_default_openai_transport_factory` 声明返回 `LLMTransport`（`str | Awaitable[str]`），内部返回的却是同步函数。调用方因此拿到 `str | Awaitable | None`，静态链路上无法确认类型，也掩盖了「content 可能为 None」这个真实分支。改为精确返回 `Callable[[List[Dict[str, str]]], str]`，并在 transport 内对 `message.content is None` 显式抛错（此前靠下游 `if not content` 兜）。
+
+#### 4. `_run_transport` 用 hasattr 判断 awaitable
+
+`hasattr(result, "__await__")` 无法收窄 Union 类型。改为 `inspect.isawaitable`，语义等价（`collections.abc.Awaitable` 的 `__subclasshook__` 同样认 `__await__`），静态可收窄。
+
+### Changed
+
+- `core.py` 的 `except ImportError` 分支为 `LEGACY_TIER1_ZH` / `LEGACY_TIER1_EN` 补空列表兜底。此前导入失败时这两个模块级常量无绑定，下游 `LEGACY_TIER1_ZH + LEGACY_TIER1_EN` 是 Unbound 运算，只靠 `rewrite_text` 入口早退才没崩。
+- `core.py` 加文件级 `reportPossiblyUnboundVariable=false` 并写明原因：27 个 pattern 的 match/fix 同样在 `try/except ImportError` 内导入，所有使用点都在 `PATTERNS_AVAILABLE` 守卫之后，运行时不会触达未绑定名。
+- `gateway_hook.py` 两处宿主侧可选依赖（`hermes_cli.config` / `hermes_constants`）加行级 `reportMissingImports` 标注。二者本就在 try/except 内，独立安装时缺席属预期。
+
+### Added
+
+- `pyrightconfig.json`：固定 venv、检查范围（src + tests）、standard 模式。
+- dev 依赖加 `pyyaml`。gateway_hook 读 config.yaml 用，运行时可选；装进 dev 是为了静态分析能解析源码，不留 reportMissingModuleSource。
+
+### 测试覆盖
+
+`pytest tests/ -q` → 380 passed，与 0.2.18 持平，无回归。`pyright src tests` → 0 errors, 0 warnings, 0 informations。
+
+定向实证 11 项全 PASS：p14 四个 pattern 的 match/fix 语义、同步与异步 transport 双路、`PATTERNS_AVAILABLE=False` 时 legacy fallback 仍可用、兜底常量类型。
+
+---
+
 ## [0.2.18] - 2026-10-26
 
 把「人写 + 反复打回重写」的 9 版经验固化成可复用判定体系：检测、判定、处置、改写四层拆开，检测层只管「有没有 AI 味」，判定层按场景决定扣多少分，处置层给出 pass / warn / rewrite / block 四档动作，改写层兜底。核心目的是让这个库能当发布前的强制闸门用，而不是只能事后打分。
