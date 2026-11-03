@@ -104,6 +104,12 @@ class SceneProfile:
         aliases: 兼容旧接口的场景别名（如 coder_pr → tech-doc）。
         penalty_overrides: {pattern_id: 新罚分}，只写相对 base 的 delta。
         disabled_patterns: 本场景不适用的 pattern_id。
+        term_exempt: {category 或 pattern_id: 词元组}。命中的 matched_text
+            含这些词时不计分。用于「词表里混进了本场景的术语」——
+            如技术文的「唯一 ID」「引擎」「利用率」。比 disabled_patterns
+            细一档：整条规则还有效，只豁免具体词。
+        category_off: 本场景整条关掉的命中类目（category 级，覆盖 legacy
+            词表类目如 symmetry_fillers；disabled_patterns 只管 pattern_id）。
         extra_patterns: 场景专属 pattern_id（也在 patterns 注册表里声明了 scenes）。
         compliance_patterns: 命中即 block、永不自动改写的 pattern_id。
         policy: 分数 → 动作分档。
@@ -117,6 +123,8 @@ class SceneProfile:
     aliases: Tuple[str, ...] = ()
     penalty_overrides: Mapping[str, int] = field(default_factory=dict)
     disabled_patterns: Tuple[str, ...] = ()
+    term_exempt: Mapping[str, Tuple[str, ...]] = field(default_factory=dict)
+    category_off: Tuple[str, ...] = ()
     extra_patterns: Tuple[str, ...] = ()
     compliance_patterns: Tuple[str, ...] = ()
     # 本场景专属的领域词。用途：合规红线跨场景生效时的「领域闸门」——
@@ -134,6 +142,14 @@ class SceneProfile:
     def is_disabled(self, pattern_id: str) -> bool:
         return pattern_id in self.disabled_patterns
 
+    def is_category_off(self, category: str) -> bool:
+        """整条类目在本场景不生效（含 legacy 词表类目）。"""
+        return category in self.category_off
+
+    def exempt_terms_for(self, key: str) -> Tuple[str, ...]:
+        """取某类目/规则下的豁免词。key 命中 category 或 pattern_id 均可。"""
+        return tuple(self.term_exempt.get(key, ()))
+
     def is_compliance(self, pattern_id: str) -> bool:
         return pattern_id in self.compliance_patterns
 
@@ -145,6 +161,8 @@ class SceneProfile:
             "aliases": list(self.aliases),
             "penalty_overrides": dict(self.penalty_overrides),
             "disabled_patterns": list(self.disabled_patterns),
+            "term_exempt": {k: list(v) for k, v in self.term_exempt.items()},
+            "category_off": list(self.category_off),
             "extra_patterns": list(self.extra_patterns),
             "compliance_patterns": list(self.compliance_patterns),
             "domain_markers": list(self.domain_markers),

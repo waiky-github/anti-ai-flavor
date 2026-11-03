@@ -115,7 +115,7 @@ def _count_tier1_hits(text: str) -> List[PatternHit]:
     return hits
 
 
-def _count_legacy_hits(text: str) -> List[PatternHit]:
+def _count_legacy_hits(text: str, profile=None) -> List[PatternHit]:
     hits: List[PatternHit] = []
 
     # 机械排序
@@ -197,6 +197,14 @@ def _count_legacy_hits(text: str) -> List[PatternHit]:
                 penalty=2,
                 note="冗余修饰词",
             ))
+
+    # 场景对 legacy 类目的罚分覆盖（2026-11-03）：
+    # 这些类目的罚分在函数内硬编码，``penalty_overrides`` 原本只作用于
+    # pattern_id，导致 profile 里写 ``"mechanical_ordering": 1`` 是空转。
+    # 这里统一按 category 兜一遍：profile 没声明就沿用硬编码值。
+    if profile is not None:
+        for h in hits:
+            h.penalty = profile.penalty_for(h.category, h.penalty)
 
     return hits
 
@@ -407,6 +415,49 @@ def _count_extended_hits(text: str, profile) -> List[PatternHit]:
     return hits
 
 
+_FENCED_CODE_RE = re.compile(r"```.*?```", re.S)
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+
+# 正文短于此值、且原文明显更长时，判定为「几乎全是代码」，退回全文检测。
+_MIN_BODY_CHARS = 200
+
+
+def _strip_code_blocks(text: str) -> str:
+    """剥离围栏代码块与行内代码，返回纯正文。
+
+    依据（2026-11-03，78 篇真人技术文 115 万字复测）：p26 中英混排、p23
+    代码缩进这两条的命中 **93% 落在代码块内部**；同时代码平均占这类文档
+    58% 的字符量，却全额计入密度分母，导致「代码多、正文 AI 味重」的文档
+    被稀释成假及格（漏检）。代码是内容但不是「文字表达」，不参与 AI 味判定，
+    因此检测范围与分母都改用正文。
+    """
+    return _INLINE_CODE_RE.sub("", _FENCED_CODE_RE.sub("", text))
+
+
+def _apply_profile_exemptions(hits: List[PatternHit], profile) -> List[PatternHit]:
+    """按 profile 声明的词级豁免 / 类目关停过滤命中。
+
+    term_exempt 与 category_off 见 ``profiles/schema.py`` 的说明。
+
+    这里**不做**同 span 去重：PatternHit 不带位置信息，只能按匹配文本
+    做指纹，而「同一句话重复多遍」是正当的加重信号（篇幅无关性要求
+    raw 随重复次数线性增长）。按文本去重会把重复 5 遍的文本压成 1 次命中，
+    反而让重复越多分越高。要治长短规则叠加，得先给 PatternHit 加位置字段。
+    """
+    if not hits:
+        return hits
+    out: List[PatternHit] = []
+    for h in hits:
+        key = h.pattern_id or h.category
+        if profile.is_category_off(h.category) or profile.is_category_off(key):
+            continue
+        exempt = profile.exempt_terms_for(key) or profile.exempt_terms_for(h.category)
+        if exempt and any(w in (h.matched_text or "") for w in exempt):
+            continue
+        out.append(h)
+    return out
+
+
 def score_text(
     text: str,
     *,
@@ -430,6 +481,14 @@ def score_text(
 
     profile = resolve_profile_for_text(scene, text)
 
+    # 检测范围与分母改用正文（剥离代码块），见 _strip_code_blocks 的说明。
+    body = _strip_code_blocks(text)
+    if len(body.strip()) < _MIN_BODY_CHARS < len(text):
+        # 几乎全是代码（如一段 shell 片段）：没有正文可判，退回全文，
+        # 避免分母趋零把少量命中放大成 block。
+        body = text
+    detect_text = body
+
     if weights is None:
         weights = {
             "tier1_zh": 5,
@@ -447,11 +506,12 @@ def score_text(
         }
 
     all_hits: List[PatternHit] = []
-    all_hits.extend(_count_tier1_hits(text))
-    all_hits.extend(_count_legacy_hits(text))
-    all_hits.extend(_count_lexicon_residual_hits(text))
-    all_hits.extend(_count_pattern_hits(text, profile))
-    all_hits.extend(_count_extended_hits(text, profile))
+    all_hits.extend(_count_tier1_hits(detect_text))
+    all_hits.extend(_count_legacy_hits(detect_text, profile))
+    all_hits.extend(_count_lexicon_residual_hits(detect_text))
+    all_hits.extend(_count_pattern_hits(detect_text, profile))
+    all_hits.extend(_count_extended_hits(detect_text, profile))
+    all_hits = _apply_profile_exemptions(all_hits, profile)
 
     raw_penalty = sum(h.penalty for h in all_hits)
 
@@ -459,7 +519,7 @@ def score_text(
     # norm = raw_penalty * 1000 / char_count
     # 同一段文本复制 N 次：raw ×N、char ×N，密度恒定（篇幅无关性）
     # 不用「保底 1000 字分母」——那会让重复短文的密度被线性放大
-    char_count = max(1, len(text))
+    char_count = max(1, len(body))
     norm_penalty = raw_penalty * 1000.0 / char_count
 
     # 归一化到 0-100（sqrt 衰减 + 轻命中保护）：
