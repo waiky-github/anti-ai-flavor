@@ -69,6 +69,22 @@ _WEAK_ABSTRACT_KEYWORDS = {
 # 兼容旧引用
 _ABSTRACT_KEYWORDS = _STRONG_ABSTRACT_KEYWORDS | _WEAK_ABSTRACT_KEYWORDS
 
+# p05/p10 形态闸门（2026-11-04）：真并列项是短语，超过这个字数就不是并列项，
+# 是正则把一句话的多个分句切成了「伪并列」（实测 841692 iptables 表/链叙述 20/27/19 字）。
+_MAX_PARALLEL_ITEM_CHARS = 12
+# 需要剥掉的包裹字符：句读 + 空白 + 成对括号，剥完才是并列项的裸长度
+_ITEM_WRAPPER_RE = re.compile(r"^[\s。！？、，,；;：:（）()\[\]【】「」\"'“”‘’]+|[\s。！？、，,；;：:（）()\[\]【】「」\"'“”‘’]+$")
+
+
+def _parallel_item_len(raw: Optional[str]) -> int:
+    """并列项的裸长度（去掉首尾标点/空白后计字）。
+
+    用来判断「这是并列项还是分句」——正则捕获到的是含分隔符的片段，
+    直接取 ``len`` 会把三处标点算进去，故先剥包裹字符。
+    """
+    return len(_ITEM_WRAPPER_RE.sub("", raw or ""))
+
+
 
 @dataclass
 class PatternHit:
@@ -273,7 +289,11 @@ def _count_pattern_hits(text: str, profile=None) -> List[PatternHit]:
         ("p11_rhetorical_questions", r"但这是否意味着[^。]*?[。？]"),
         ("p12_excessive_transitions", r"[^。]*?(?:此外|另外)[^。]*?[。！]"),
         ("p13_passive_overuse", r"(?:is|was|been)\s+(?:considered|believed|thought|found|discovered|shown)\s+(?:to\s+be)?[^。]*?[。.]"),
-        ("p14_nominalization", r"(?:进行|做出)\s*[^。]*?(?:优化|改进|决定|选择|部署|实施)[^。]*?[。！]"),
+        # p14_nominalization：只有「进行/做出 +（至多 6 字修饰语）+ 动词」才算名词化。
+        # 旧正则 (?:进行|做出)\s*[^。]*?(?:优化|改进|决定|…)[^。]*?[。！] 会跨分句匹配：
+        # 实测「对数据包进行过滤，具体的规则要求决定如何处理一个数据包。」被判名词化，
+        # 实际命中来自后半句的「决定」，与「进行」隔着逗号毫无关系。
+        ("p14_nominalization", r"(?:进行|做出)(?:了|过)?[^。，,\n]{0,6}?(?:优化|改进|决定|选择|部署|实施)[^。]*?[。！]"),
         ("p15_abstract_subjects", r"(?:该技术的应用|该技术的实现|这一举措)[^。]*?[。！]"),
         ("p16_formulaic_closers", r"(?:综上所述|总之|简而言之)[^。]*?[。！]"),
         ("p17_forced_formality", r"(?:利用|运用|鉴于|遵照)\s*[^。]*?[。！]"),
@@ -299,6 +319,13 @@ def _count_pattern_hits(text: str, profile=None) -> List[PatternHit]:
             if pattern_id in ("p05_forced_triads", "p10_list_fatigue"):
                 groups = m.groups()
                 n = len(groups)
+                # 形态闸门（2026-11-04，依据 74 对真人/AI 对照集）：
+                # 两条正则用 [^。\n]{2,30}? 切分，遇到「其中表是按照…的，链是按照…的，
+                # 表和链…」这类技术叙述，会把同一句话的三个**分句**当成三个并列项。
+                # 真并列项是短语（4-8 字），不是跨逗号的整段分句——片段的裸长度超过
+                # 阈值即判「这是句子切分，不是排比」，不算命中。
+                if max(_parallel_item_len(g) for g in groups) > _MAX_PARALLEL_ITEM_CHARS:
+                    continue
                 strong_count = sum(
                     1 for g in groups
                     if any(w in g for w in _STRONG_ABSTRACT_KEYWORDS)
